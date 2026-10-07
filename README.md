@@ -26,8 +26,10 @@ Xbox 手柄 ──USB──> 筆電 ──序列埠──> ESP32 ──PWM──
 |---|---|
 | `firmware/ESP32/` | 韌體（PlatformIO）。ROV 上唯一的 MCU 程式 |
 | `host/console.py` | **操作台**：攝影機 + 四角畫面 + 按鍵切換任務 |
+| `host/vision/` | 辨識模組：`apriltag.py`（Mission 2.1）、`color.py`（Mission 5） |
 | `host/pad_bridge.py` | 手柄 → 序列埠的橋接層。操作台用它，也可以單獨跑 |
-| `docs/` | 操作手冊 |
+| `docs/GUIDE.md` | **操作指南**：照順序做的完整流程 |
+| `docs/` | 其餘參考資料 |
 
 ## 硬體接線
 
@@ -159,9 +161,9 @@ python3 host/console.py
 │                    CAMERA                    │  中間 攝影機影像
 │                                              │
 │ MODE  AprilTag         A  AprilTag   [ON]    │  左下 目前任務與結果
-│ ID 07  dist 1.24 m     B  Colour     [  ]    │  右下 按鍵提示
-│ CONF 0.93              X  WiFi       [  ]    │
-│                        RB Lock       [LOCKED]│
+│ target   7             B  Colour     [  ]    │  右下 按鍵提示
+│ scanned  1/3           X  WiFi       [  ]    │
+│ ids      [7]           Y  Lock       [LOCKED]│
 └──────────────────────────────────────────────┘
 ```
 
@@ -174,10 +176,10 @@ python3 host/console.py
 
 | 按鍵 | 功能 |
 |---|---|
-| A | AprilTag 辨識 |
-| B | 顏色辨識 |
-| X | WiFi／Mission 1（順便讓板子立刻重取一次資料） |
-| RB | 安全鍵（解鎖／上鎖開關） |
+| **A** | AprilTag 辨識（Mission 2.1） |
+| **B** | 顏色辨識（Mission 5） |
+| **X** | WiFi／Mission 1（順便讓板子立刻重取一次資料） |
+| **Y** | 安全鍵（解鎖／上鎖開關） |
 
 再按一次同一個鍵就回到 Manual。按鍵編號用 SDL 標準對應，第一次用真手柄跑之前
 先 `python3 host/pad_bridge.py --show-input` 核對一下。
@@ -291,9 +293,9 @@ JOY X=+0.420 Y=-0.170 MAG=0.542 OUT READY=1 L=1718 R=1282 TL=1718 TR=1282 EN=1 L
 
 ## 待辦
 
-- [ ] 把 AprilTag 與顏色辨識接進 `host/console.py` 的 TaskAprilTag / TaskColor
-      （目前這兩個任務只顯示「尚未接上」）
 - [ ] 在真船上驗證轉向方向與電調行程
+- [ ] 顏色辨識的 HSV 閾值在真實泳池校準（按 `1`/`2`/`3` 框選桿身）
+- [ ] 多個 Tag 同時出現的實景測試（目前只在單一 Tag 的合成畫面上驗證過）
 - [ ] 確認按鍵編號與軸符號（跑 `--show-input` 核對）
 
 ### 已知問題（下水前要處理）

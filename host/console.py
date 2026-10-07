@@ -54,8 +54,13 @@ import cv2
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from pad_bridge import (                       # noqa: E402
-    DEFAULT_DEADMAN_BUTTON, Latch, Board, Pad,
-    find_ports, learn_deadman, missing_deps, pick_port,
+    DEFAULT_DEADMAN_BUTTON, Latch, Board, Pad, btn_name,
+    find_ports, missing_deps, pick_port,
+)
+from vision.apriltag import AprilTagScanner    # noqa: E402
+from vision.color import (                     # noqa: E402
+    COLORS as POLE_COLORS, ColorDetector, calibrate,
+    annotate as annotate_color,
 )
 
 # ===========================================================================
@@ -63,6 +68,7 @@ from pad_bridge import (                       # noqa: E402
 # ===========================================================================
 
 WINDOW = "UWR ROV Console"
+MASKS_WINDOW = "Colour masks"
 
 CAM_INDEX = 0
 CAM_WIDTH = 1280
@@ -76,15 +82,7 @@ CAM_EXPOSURE = 0.0      # 0 = auto. Set negative for manual on some webcams.
 BTN_APRILTAG = 0        # A
 BTN_COLOR    = 1        # B
 BTN_WIFI     = 2        # X
-
-# SDL's standard gamepad layout. Only used to label the on-screen key map; an
-# unknown number is printed as-is rather than guessed at.
-BTN_NAMES = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB",
-             6: "Back", 7: "Start", 8: "LStick", 9: "RStick"}
-
-
-def btn_name(n) -> str:
-    return BTN_NAMES.get(n, f"btn{n}")
+# Y (3) is the safety key - see DEFAULT_DEADMAN_BUTTON in pad_bridge.
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 THICKNESS = 1
@@ -242,6 +240,33 @@ def pulse_frac(us: int) -> float:
 #  Tasks
 # ===========================================================================
 
+def close_window(name):
+    """Close a window if it is open. Some OpenCV backends raise when asked
+    about a window that was never created."""
+    try:
+        if cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.destroyWindow(name)
+    except cv2.error:
+        pass
+
+
+def select_box(frame, title):
+    """Let the operator drag a box, returned in original-image pixels.
+
+    Blocks the drive loop for as long as the selection window is open, which
+    means the board's link timeout stops the motors. That is the safe
+    direction - the operator is deliberately not driving while framing a box.
+    """
+    scale = min(1, 960 / frame.shape[1], 720 / frame.shape[0])
+    preview = cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1 else frame
+    box = cv2.selectROI(title, preview, showCrosshair=True, fromCenter=False)
+    cv2.destroyWindow(title)
+    if not box[2] or not box[3]:
+        return None
+    x, y, w, h = [round(v / scale) for v in box]
+    return x, y, min(w, frame.shape[1] - x), min(h, frame.shape[0] - y)
+
+
 class Task:
     """A function that a controller button switches to.
 
@@ -261,30 +286,162 @@ class Task:
     def leave(self, ctx):
         """Called when another task takes over."""
 
+    def update(self, ctx, frame):
+        """Called once per new frame while this task is active."""
+
+    def view(self, ctx, frame):
+        """The image to show in the centre. Default is the live frame."""
+        return frame
+
+    def overlay(self, ctx, frame):
+        """Draw on the centre image, in place."""
+
     def info(self, ctx) -> list:
         """Lines for the bottom-left panel."""
         return [("MODE  Manual", AMBER),
                 ("no task selected", GREY)]
 
+    def on_key(self, key, ctx) -> bool:
+        """Handle a printable key. Return True if it was consumed."""
+        return False
+
 
 class TaskAprilTag(Task):
+    """Mission 2.1: scan for tags and report the largest ID.
+
+    The scan accumulates for as long as the task is active, so a tag seen
+    intermittently still gets confirmed.
+    """
+
     name = "AprilTag"
     button = BTN_APRILTAG
     hint = "AprilTag"
 
+    def enter(self, ctx):
+        ctx.apriltag.reset()
+
+    def update(self, ctx, frame):
+        ctx.apriltag.detect(frame)
+
+    def overlay(self, ctx, frame):
+        ctx.apriltag.annotate(frame)
+
     def info(self, ctx):
-        return [("MODE  AprilTag", AMBER),
-                ("detector not wired in yet", GREY)]
+        s = ctx.apriltag
+        target = s.target_id
+        lines = [("MODE  AprilTag", AMBER),
+                 (f"target   {target if target is not None else '--'}",
+                  GREEN if target is not None else GREY),
+                 (f"scanned  {len(s.confirmed_ids)}/{s.expected}", WHITE),
+                 (f"ids      {s.confirmed_ids if s.confirmed_ids else '-'}", WHITE)]
+        if s.target_id is None:
+            lines.append(("hold still on a tag", GREY))
+        return lines
 
 
 class TaskColor(Task):
-    name = "Color"
+    """Mission 5: find coloured poles in a short burst of frames.
+
+    Entering the task starts a burst; when it closes, the closing frame is
+    frozen with the boxes drawn and stays on screen until C restarts it. The
+    result is a timestamped observation, not live tracking, so it must not
+    drift with the camera.
+    """
+
+    name = "Colour"
     button = BTN_COLOR
     hint = "Colour"
 
+    def __init__(self):
+        self.frozen = None
+
+    def enter(self, ctx):
+        ctx.color.clear()
+        self.frozen = None
+        ctx.color.start(ctx.now)
+
+    def leave(self, ctx):
+        ctx.color.clear()
+        self.frozen = None
+        close_window(MASKS_WINDOW)
+
+    def update(self, ctx, frame):
+        result = ctx.color.update(frame, ctx.now)
+        if result is not None:
+            snapshot = ctx.color.burst.snapshot
+            self.frozen = annotate_color(snapshot.copy(), result, ctx.color.required)
+
+    def view(self, ctx, frame):
+        return self.frozen if self.frozen is not None else frame
+
     def info(self, ctx):
-        return [("MODE  Colour", AMBER),
-                ("detector not wired in yet", GREY)]
+        c = ctx.color
+        result = c.burst.result
+        order = "-".join(c.order)
+        required = c.required or "done"
+        lines = [("MODE  Colour", AMBER),
+                 (f"order    {order}   next {required}", WHITE)]
+        if c.burst.active:
+            left = max(0.0, c.settings.seconds - (ctx.now - c.burst.started))
+            lines.append((f"SCANNING {left:.1f}s", AMBER))
+        elif result is None:
+            lines.append(("IDLE - hold the poles and press C", GREY))
+        else:
+            lines.append((f"status   {result['status']}", WHITE))
+            if result["targets"]:
+                for item in result["targets"][:3]:
+                    lines.append((f"{item['color']}  score {item['shape_score']:.2f}"
+                                  f"  hits {item['hits']}/{result['frames']}",
+                                  POLE_COLORS.get(item["color"], WHITE)))
+            else:
+                lines.append(("no pole confirmed", GREY))
+        if c.roi:
+            lines.append(("ROI active  (F to clear)", GREY))
+        lines.append(("C retry | N next | O roi | 1/2/3 calib", GREY))
+        return lines
+
+    def on_key(self, key, ctx):
+        c = ctx.color
+        if key == "c":
+            c.clear()
+            self.frozen = None
+            c.start(ctx.now)
+        elif key == "r":
+            c.clear()
+            self.frozen = None
+        elif key == "n":
+            c.advance()
+            self.frozen = None
+        elif key == "f":
+            c.set_roi(None)
+            self.frozen = None
+        elif key == "o":
+            box = select_box(ctx.last_frame, "Select recognition ROI")
+            if box:
+                c.set_roi(box)
+                self.frozen = None
+        elif key in ("1", "2", "3"):
+            color = {"1": "R", "2": "Y", "3": "B"}[key]
+            box = select_box(ctx.last_frame, f"Sample the {color} pole only")
+            if box:
+                bands = calibrate(ctx.last_frame, box)
+                if bands:
+                    try:
+                        c.apply_calibration(color, bands)
+                        c.clear()
+                        self.frozen = None
+                        print(f"{color} calibrated and saved to {c.config_path}")
+                    except (ValueError, OSError) as exc:
+                        print(f"calibration failed: {exc}")
+        elif key == "d":
+            c.show_masks = not c.show_masks
+            if not c.show_masks:
+                close_window(MASKS_WINDOW)
+        elif key == "s":
+            ctx.snapshot(self.frozen if self.frozen is not None else ctx.last_frame)
+        else:
+            return False
+        return True
 
 
 class TaskWifi(Task):
@@ -341,8 +498,12 @@ class Console:
         self.frames = 0
         self.fps = 0.0
         self._t_fps = time.monotonic()
+        self.now = time.monotonic()
+        self.last_frame = None
         self.mission = {"wifi": "-", "rssi": "-", "ip": "-", "http": "-",
                         "data": ""}
+        self.apriltag = AprilTagScanner(mode="largest", min_hits=3, expected=3)
+        self.color = ColorDetector()
         if board is not None:
             board.on_line = self._on_board_line
 
@@ -474,6 +635,15 @@ class Console:
                    anchor="bl", fs=0.5)
         self._draw_hints(img)
 
+    def snapshot(self, frame):
+        folder = pathlib.Path(__file__).resolve().parent / "snapshots"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / time.strftime("rov-%Y%m%d-%H%M%S.png")
+        if cv2.imwrite(str(path), frame):
+            print(f"saved {path}")
+        else:
+            print(f"could not write {path}")
+
     def render(self, telem, en, frame=None):
         """Produce one finished OSD frame. Used by the live loop and by
         --render-preview, so the preview can never drift from the real thing."""
@@ -481,10 +651,20 @@ class Console:
             frame = self.camera.read()
         if frame is None:
             frame = np.zeros((CAM_HEIGHT, CAM_WIDTH, 3), np.uint8)
-        img = frame.copy()
-        link = telem is not None
-        self.draw_osd(img, telem, link, en)
-        return img
+        self.now = time.monotonic()
+        self.last_frame = frame
+
+        # The task runs on the live frame, then draws on whatever it wants
+        # shown. Copying before the overlay keeps a task from painting onto
+        # the buffer the camera will hand back next tick.
+        self.task.update(self, frame)
+        view = self.task.view(self, frame)
+        if view is frame:
+            view = frame.copy()
+        self.task.overlay(self, view)
+
+        self.draw_osd(view, telem, telem is not None, en)
+        return view
 
     # ---- main loop ----------------------------------------------------
     def run(self) -> int:
@@ -550,9 +730,15 @@ class Console:
                     self._t_fps = now
 
                 cv2.imshow(WINDOW, img)
+                if self.color.show_masks and self.color.burst.masks:
+                    cv2.imshow(MASKS_WINDOW,
+                               np.hstack(list(self.color.burst.masks.values())))
+
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
+                if 32 <= key < 127:
+                    self.task.on_key(chr(key).lower(), self)
         except KeyboardInterrupt:
             pass
         finally:
@@ -592,7 +778,7 @@ def render_preview(outdir: pathlib.Path) -> int:
         ("manual_locked", None, False),
         ("manual_unlocked", telem, True),
         ("nolink", None, False),
-        ("aprilag", telem, True),
+        ("apriltag", telem, True),
         ("color", telem, True),
         ("wifi", telem, True),
     ]
@@ -635,9 +821,9 @@ def main() -> int:
     p.add_argument("--no-serial", action="store_true", help="no board attached")
     p.add_argument("--no-deadman", action="store_true",
                    help="no safety key required (first debugging only, risky)")
-    p.add_argument("--deadman", type=int, default=None,
-                   help="safety key button number; the script asks you to press it "
-                        f"if omitted (falls back to {DEFAULT_DEADMAN_BUTTON})")
+    p.add_argument("--deadman", type=int, default=DEFAULT_DEADMAN_BUTTON,
+                   help="safety key button number "
+                        f"(default {DEFAULT_DEADMAN_BUTTON}, which is Y)")
     p.add_argument("--camera", type=int, default=CAM_INDEX, help="camera index")
     p.add_argument("--synthetic", action="store_true",
                    help="no camera: draw the OSD over a test pattern")
@@ -668,13 +854,11 @@ def main() -> int:
 
     if args.no_deadman:
         print("--no-deadman: the motors are live without pressing anything.")
-    elif args.deadman is None:
-        print("Press the button you want as the safety key (RB is a good choice).")
-        idx, why = learn_deadman(lambda: (pad.pump(), pad.pressed_buttons())[1])
-        pad.deadman_button = DEFAULT_DEADMAN_BUTTON if idx is None else idx
-        print(why + f" (safety key = button {pad.deadman_button})")
     else:
-        pad.deadman_button = args.deadman
+        pad.deadman_button = (DEFAULT_DEADMAN_BUTTON if args.deadman is None
+                              else args.deadman)
+        print(f"safety key = {btn_name(pad.deadman_button)} "
+              f"(button {pad.deadman_button}). Starts locked.")
 
     board = None
     if not args.no_serial:

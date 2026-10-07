@@ -26,8 +26,8 @@ Usage
     # Identify axes and find which button should be the safety key
     python3 pad_bridge.py --show-input
 
-    # Normal run. On startup, press the button you want as the safety key;
-    # it learns the number. It starts locked: press once to unlock.
+    # Normal run. The safety key is Y and starts locked; press it once to
+    # unlock, again to lock. Loss of the controller re-locks automatically.
     python3 pad_bridge.py
 
     # First debugging session, no lock wanted
@@ -61,10 +61,19 @@ PAD_Y_SIGN = -1.0
 
 DEFAULT_AXIS_X = 0
 DEFAULT_AXIS_Y = 1
-DEFAULT_DEADMAN_BUTTON = 5      # usually RB on an Xbox controller
+DEFAULT_DEADMAN_BUTTON = 3      # Y, under SDL's standard gamepad mapping
 CMD_HZ = 50
 
 PULSE_NEUTRAL = 1500
+
+# SDL's standard gamepad layout. Used only to label buttons on screen and in
+# messages; an unknown number is printed as-is rather than guessed at.
+BTN_NAMES = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB",
+             6: "Back", 7: "Start", 8: "LStick", 9: "RStick"}
+
+
+def btn_name(n) -> str:
+    return BTN_NAMES.get(n, f"btn{n}")
 
 
 # ===========================================================================
@@ -572,28 +581,6 @@ def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
         return 0
 
 
-def learn_deadman(poll, timeout=12.0, fallback=None, sleep=time.sleep):
-    """Ask the user to press the button they want as the safety key.
-
-    Why not hardcode the number: RB is usually button 5 under SDL, but
-    controller firmware, wired versus Bluetooth and the platform can all shift
-    the mapping. Guessing an unverified number has already cost this project
-    time. One press is conclusive.
-
-    poll: zero-argument callable returning the set of buttons currently down.
-    Returns (button number or None, explanation).
-    """
-    t0 = time.monotonic()
-    baseline = set(poll())          # ignore anything already held at startup
-    while time.monotonic() - t0 < timeout:
-        new = set(poll()) - baseline
-        if new:
-            idx = min(new)
-            return idx, f"learned: safety key = button {idx}"
-        sleep(0.02)
-    return fallback, "no button detected, using the default number"
-
-
 def missing_deps():
     """Say which Python to install into. A machine usually has several
     python3 installations, and installing into one while running another is
@@ -867,29 +854,14 @@ def selftest() -> int:
     check("silent port produces an actionable message",
           len(diagnose_no_telemetry("/dev/cu.usbserial-A5069RR4")) > 20)
 
-    # ---- 7. Safety key auto-learn ----
-    print("\n[7] safety key auto-learn")
-
-    def scripted(seq):
-        it = iter(seq)
-        return lambda: next(it, seq[-1])
-
-    idx, why = learn_deadman(scripted([set(), set(), {5}, {5}]),
-                             timeout=0.5, fallback=None, sleep=lambda s: None)
-    check("one press on button 5 learns 5", idx == 5, f"got={idx} ({why})")
-
-    idx, why = learn_deadman(scripted([{2}, {2}, {2, 9}, {2, 9}]),
-                             timeout=0.5, fallback=None, sleep=lambda s: None)
-    check("2 held at startup then 9 pressed -> learns 9",
-          idx == 9, f"got={idx} ({why})")
-
-    idx, why = learn_deadman(scripted([set()]), timeout=0.05, fallback=None,
-                             sleep=lambda s: None)
-    check("never pressed -> None, caller falls back", idx is None, f"got={idx}")
-
-    idx, why = learn_deadman(scripted([set(), {7, 3}]), timeout=0.5, fallback=None,
-                             sleep=lambda s: None)
-    check("two at once -> the lower number, deterministically", idx == 3, f"got={idx}")
+    # ---- 7. Button labels ----
+    print("\n[7] button labels")
+    check("SDL numbers map to the expected names",
+          btn_name(0) == "A" and btn_name(1) == "B" and btn_name(2) == "X"
+          and btn_name(3) == "Y" and btn_name(5) == "RB")
+    check("an unknown number is shown as-is, not guessed",
+          btn_name(42) == "btn42")
+    check("the safety key defaults to Y", DEFAULT_DEADMAN_BUTTON == 3)
 
     print(f"\n{'self test passed' if ok else 'self test FAILED'}")
     return 0 if ok else 1
@@ -910,9 +882,9 @@ def main() -> int:
                    help="no safety key required (first debugging only, risky)")
     p.add_argument("--no-serial", action="store_true",
                    help="no board, controller readings only")
-    p.add_argument("--deadman", type=int, default=None,
-                   help="safety key button number; without it the script asks you "
-                        f"to press it at startup (falls back to {DEFAULT_DEADMAN_BUTTON})")
+    p.add_argument("--deadman", type=int, default=DEFAULT_DEADMAN_BUTTON,
+                   help="safety key button number "
+                        f"(default {DEFAULT_DEADMAN_BUTTON}, which is Y)")
     p.add_argument("--axis-x", type=int, default=DEFAULT_AXIS_X, help="stick X axis number")
     p.add_argument("--axis-y", type=int, default=DEFAULT_AXIS_Y, help="stick Y axis number")
     p.add_argument("--invert-x", action="store_true", help="negate X (if right reads negative)")
@@ -942,16 +914,11 @@ def main() -> int:
 
     if args.no_deadman:
         print("--no-deadman: the motors are live without pressing anything.")
-    elif args.deadman is None:
-        print("Press the button you want as the safety key (RB is a good choice).")
-        print("(no press within 12 s uses the default number "
-              f"{DEFAULT_DEADMAN_BUTTON})")
-        idx, why = learn_deadman(lambda: (pad.pump(), pad.pressed_buttons())[1])
-        pad.deadman_button = DEFAULT_DEADMAN_BUTTON if idx is None else idx
-        print(why + f" (safety key = button {pad.deadman_button})")
     else:
-        pad.deadman_button = args.deadman
-        print(f"safety key = button {pad.deadman_button} (from the command line)")
+        pad.deadman_button = (DEFAULT_DEADMAN_BUTTON if args.deadman is None
+                              else args.deadman)
+        print(f"safety key = {btn_name(pad.deadman_button)} "
+              f"(button {pad.deadman_button}). Starts locked.")
 
     board = None
     if not args.no_serial:

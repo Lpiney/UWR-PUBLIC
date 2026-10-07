@@ -12,8 +12,10 @@ compile_commands.json
 __pycache__/
 *.py[cod]
 
-# console.py --render-preview output
+# console.py runtime state
 .preview/
+host/snapshots/
+host/local-config.json
 
 # macOS
 .DS_Store
