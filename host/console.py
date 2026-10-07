@@ -311,6 +311,13 @@ class Task:
         """Handle a printable key. Return True if it was consumed."""
         return False
 
+    def keys(self, ctx) -> list:
+        """Keyboard shortcuts for this task, as (key, what it does) pairs.
+
+        S is handled globally by the console, so it is not listed here.
+        """
+        return []
+
     def capture(self, ctx) -> bool:
         """Recognize once, right now. False if this task has nothing to capture."""
         return False
@@ -400,6 +407,9 @@ class TaskAprilTag(Task):
             return self.capture(ctx)
         return False
 
+    def keys(self, ctx):
+        return [("C", "capture")]
+
 
 class TaskColor(Task):
     """Mission 5: find coloured poles.
@@ -464,8 +474,16 @@ class TaskColor(Task):
                 lines.append(("no pole found - aim and retry", GREY))
         if c.roi:
             lines.append(("ROI active  (F to clear)", GREY))
-        lines.append(("N next | O roi | 1/2/3 calib", GREY))
         return lines
+
+    def keys(self, ctx):
+        return [("C", "capture"),
+                ("N", "next colour"),
+                ("O", "select roi"),
+                ("F", "clear roi"),
+                ("1 2 3", "calibrate R/Y/B"),
+                ("D", "colour masks"),
+                ("R", "clear result")]
 
     def on_key(self, key, ctx):
         c = ctx.color
@@ -502,8 +520,6 @@ class TaskColor(Task):
             c.show_masks = not c.show_masks
             if not c.show_masks:
                 close_window(MASKS_WINDOW)
-        elif key == "s":
-            ctx.snapshot(self.frozen if self.frozen is not None else ctx.last_frame)
         else:
             return False
         return True
@@ -681,7 +697,8 @@ class Console:
             ty += line_h
 
     def _draw_hints(self, img):
-        """Key map, showing which physical button does what and what is active."""
+        """Two panels in the bottom-right corner: the controller map, and just
+        above it the keyboard shortcuts for whatever task is active."""
         lines = []
         for task_cls in TASKS:
             active = type(self.task) is task_cls
@@ -702,8 +719,18 @@ class Console:
             lines.append((f"{btn_name(btn):<4} Lock     "
                           f"[{'LOCKED' if locked else 'UNLOCK'}]",
                           GREY if locked else GREEN))
-        draw_panel(img, img.shape[1] - 16, img.shape[0] - 16, lines,
-                   anchor="br", fs=0.5)
+        _, py, _, _ = draw_panel(img, img.shape[1] - 16, img.shape[0] - 16,
+                                 lines, anchor="br", fs=0.5)
+
+        keys = [("Q Esc", "quit"), ("S", "save png")] + list(self.task.keys(self))
+        draw_panel(img, img.shape[1] - 16, py - 6, self._key_lines(keys),
+                   anchor="br", fs=0.44, pad=7)
+
+    @staticmethod
+    def _key_lines(keys):
+        """Render (key, action) pairs as aligned rows."""
+        width = max(len(k) for k, _ in keys)
+        return [(f"{k:<{width}}   {action}", GREY) for k, action in keys]
 
     def draw_osd(self, img, telem, link, en):
         self._draw_status(img, telem, link, en)
@@ -815,7 +842,13 @@ class Console:
                 if key in (ord("q"), 27):
                     break
                 if 32 <= key < 127:
-                    self.task.on_key(chr(key).lower(), self)
+                    ch = chr(key).lower()
+                    if ch == "s":
+                        # Saving works the same in every task, so it does not
+                        # belong to any one of them.
+                        self.snapshot(self.task.view(self, self.last_frame))
+                    else:
+                        self.task.on_key(ch, self)
         except KeyboardInterrupt:
             pass
         finally:

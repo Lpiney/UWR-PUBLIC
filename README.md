@@ -160,8 +160,11 @@ python3 host/console.py
 │                                              │
 │                    CAMERA                    │  中間 攝影機影像
 │                                              │
+│                                  Q Esc  quit │  右下（上）鍵盤快捷鍵
+│                                  S      png  │            依目前任務而變
+│                                  C      ...  │
 │ MODE  AprilTag         A  AprilTag   [ON]    │  左下 目前任務與結果
-│ target   7             B  Colour     [  ]    │  右下 按鍵提示
+│ target   7             B  Colour     [  ]    │  右下（下）手柄按鍵
 │ scanned  1/3           X  WiFi       [  ]    │
 │ ids      [7]           RB Capture    [ON]    │
 │                        Y  Lock       [LOCKED]│

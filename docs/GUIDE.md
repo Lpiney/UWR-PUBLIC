@@ -256,5 +256,5 @@ cd host
 python3 -m unittest test_console vision.test_apriltag vision.test_color -v
 ```
 
-32 項，不需要攝影機、不需要板子、不需要手柄。涵蓋偵測邏輯、多幀確認、
+33 項，不需要攝影機、不需要板子、不需要手柄。涵蓋偵測邏輯、多幀確認、
 校準，以及「A / B 待命、RB 觸發」這個互動本身。

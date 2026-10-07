@@ -11,7 +11,7 @@ from unittest import TestCase
 
 import cv2
 
-from console import (BTN_APRILTAG, BTN_CAPTURE, Console, TaskAprilTag,
+from console import (BTN_APRILTAG, BTN_CAPTURE, Console, Task, TaskAprilTag,
                      TaskColor, Camera, Pad)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.test_apriltag import frame_with_tags
@@ -140,6 +140,15 @@ class ConsoleTaskTests(TestCase):
             out = self.con.render(self.telemetry, True, frame=self.tag_frame.copy())
             self.assertEqual(out.shape, self.tag_frame.shape)
             self.assertGreater(int(out.sum()), 0)
+
+    def test_every_task_declares_the_keys_it_handles(self):
+        """The on-screen hint panel is built from these, so a task that
+        handles a key without declaring it leaves the operator guessing."""
+        self.assertEqual(TaskAprilTag().keys(self.con), [("C", "capture")])
+        self.assertEqual([k for k, _ in TaskColor().keys(self.con)],
+                         ["C", "N", "O", "F", "1 2 3", "D", "R"])
+        # Manual declares nothing of its own; Q and S are added globally.
+        self.assertEqual(Task().keys(self.con), [])
 
 
 if __name__ == "__main__":
