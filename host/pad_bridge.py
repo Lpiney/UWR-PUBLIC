@@ -210,12 +210,23 @@ class Latch:
 #  Serial link to the board
 # ===========================================================================
 
-# Ports that always exist on macOS and are never the board.
-_NOT_A_BOARD = ("debug-console", "Bluetooth-Incoming-Port", "Bluetooth-PDA-Sync")
-# USB-to-serial bridge chips (FTDI / CP210x / CH34x).
-_BRIDGE_LIKE = ("usbserial", "slab", "wch", "ftdi", "cp210")
-# Other USB serial ports, including the ESP32's own USB-CDC interface.
-_USB_LIKE = ("usbserial", "usbmodem", "slab", "wch", "usb")
+# Ports that are never the board. On macOS these are system and Bluetooth
+# entry points; on Windows a motherboard serial port is often present too and
+# its description reads "Communications Port".
+_NOT_A_BOARD = ("debug-console", "bluetooth", "communications port")
+# USB-to-serial bridge chips: FTDI, Silicon Labs, WCH, Prolific.
+#
+# Matching looks at the device name AND the description, because the two
+# platforms put the information in different places. On macOS the device name
+# carries the chip ("cu.usbserial-A5069RR4"); on Windows the device is just
+# "COM5" and the only clue is the description, which reads "USB Serial Port"
+# (FTDI's driver) or "USB-SERIAL CH340" (WCH's).
+_BRIDGE_LIKE = ("usbserial", "slab", "wch", "ftdi", "cp210", "ch34", "ch910",
+                "ch341", "prolific", "ft232", "usb serial port")
+# Other USB serial ports, including the ESP32's own USB-CDC interface, which
+# Windows describes as "USB Serial Device".
+_USB_LIKE = ("usbserial", "usbmodem", "slab", "wch", "usb serial device",
+             "usb-serial", "usb")
 
 
 class Telemetry:
@@ -285,33 +296,55 @@ def parse_joy(line: str, t: Telemetry) -> bool:
 
 
 def find_ports() -> list:
-    """List serial ports, preferring pyserial's enumeration."""
+    """List serial ports as (device, description) pairs.
+
+    The description is carried because it is the only thing that identifies a
+    port on Windows, where the device is just "COM5".
+    """
     try:
         from serial.tools import list_ports as slp
-        return [p.device for p in slp.comports()]
+        return [(p.device, p.description or "") for p in slp.comports()]
     except Exception:
         return []
 
 
-def pick_port(names: list):
-    """Pick the board out of a list of port names, or return None.
+def pick_port(ports: list):
+    """Pick the board out of a list of ports, or return None.
 
-    Pure function over strings, so the self test can feed it real port lists.
-    A macOS port list always contains Bluetooth devices and system debug
-    ports; recognising the board automatically saves typing --port every time.
+    Accepts either (device, description) pairs from find_ports() or bare
+    device-name strings, so it stays a pure function and the self test can
+    feed it realistic lists directly.
+
+    Auto-detection exists because every platform's port list is full of
+    entries that are not the board - Bluetooth devices and system debug ports
+    on macOS, motherboard serial ports and virtual COM ports on Windows.
     """
-    cand = [n for n in names if not any(s in n for s in _NOT_A_BOARD)]
-    # Prefer a bridge chip. The firmware drives both the native USB port and
-    # UART0, but the bridge port is the more stable of the two on this board.
-    bridge = [n for n in cand if any(k in n.lower() for k in _BRIDGE_LIKE)]
+    norm = [(p, "") if isinstance(p, str) else (p[0], p[1] or "") for p in ports]
+
+    cand, bridge, usb_like = [], [], []
+    for dev, desc in norm:
+        hay = f"{dev} {desc}".lower()
+        if any(s in hay for s in _NOT_A_BOARD):
+            continue
+        cand.append(dev)
+        if any(k in hay for k in _BRIDGE_LIKE):
+            bridge.append(dev)
+        elif any(k in hay for k in _USB_LIKE):
+            usb_like.append(dev)
+
+    # Prefer the bridge chip. The firmware answers on both the native USB port
+    # and UART0, but the bridge is the more predictable of the two.
     if len(bridge) == 1:
         return bridge[0], cand
-    usb_like = [n for n in cand if any(k in n.lower() for k in _USB_LIKE)]
     if len(usb_like) == 1:
         return usb_like[0], cand
     if len(cand) == 1:
         return cand[0], cand
     return None, cand
+
+
+def is_windows_com(name: str) -> bool:
+    return name.upper().startswith("COM") and name[3:].isdigit()
 
 
 def diagnose_no_telemetry(port: str) -> str:
@@ -322,10 +355,14 @@ def diagnose_no_telemetry(port: str) -> str:
     of time.
     """
     p = (port or "").lower()
-    if any(k in p for k in ("usbserial", "slab", "wch", "ftdi", "cp210", "usbmodem")):
+    looks_like_board = (is_windows_com(port or "")
+                        or any(k in p for k in _BRIDGE_LIKE)
+                        or "usbmodem" in p)
+    if looks_like_board:
         return ("Port looks plausible but no telemetry arrived. Check: is the board "
                 "powered? Is the ROV firmware flashed (it emits a JOY line every "
-                "50 ms)? Is the port held open by a serial monitor?")
+                "50 ms)? Is the port held open by a serial monitor? On Windows, is "
+                "the USB-serial driver installed (FTDI VCP, or WCH CH34x)?")
     return ("No telemetry: confirm the board is powered and running the ROV "
             "firmware, which emits a JOY line continuously.")
 
@@ -802,6 +839,30 @@ def selftest() -> int:
     chosen, _ = pick_port(two_ports)
     check("bridge chip preferred over the native USB port",
           chosen == "/dev/cu.usbserial-A5069RR4", f"chose {chosen}")
+
+    # Windows: the device is just COMx, so the chip only shows up in the
+    # description. These are the strings pyserial actually reports there.
+    chosen, _ = pick_port([("COM1", "Communications Port"),
+                           ("COM5", "USB Serial Port"),
+                           ("COM6", "USB Serial Device")])
+    check("Windows: FTDI bridge picked over the motherboard port and the "
+          "ESP32's own USB port", chosen == "COM5", f"chose {chosen}")
+
+    chosen, _ = pick_port([("COM3", "Bluetooth Serial Port")])
+    check("Windows: a lone Bluetooth port is not the board", chosen is None,
+          f"chose {chosen}")
+
+    chosen, _ = pick_port([("COM7", "Silicon Labs CP210x USB to UART Bridge")])
+    check("Windows: a CP210x bridge is recognised", chosen == "COM7",
+          f"chose {chosen}")
+
+    chosen, _ = pick_port([("COM4", "USB-SERIAL CH340 (COM4)")])
+    check("Windows: a CH340 bridge is recognised", chosen == "COM4",
+          f"chose {chosen}")
+
+    chosen, _ = pick_port([("COM2", "USB Serial Device")])
+    check("Windows: the ESP32's own USB port alone is still usable",
+          chosen == "COM2", f"chose {chosen}")
 
     check("silent port produces an actionable message",
           len(diagnose_no_telemetry("/dev/cu.usbserial-A5069RR4")) > 20)

@@ -104,6 +104,18 @@ PULSE_MAX = 2000
 #  Camera
 # ===========================================================================
 
+def camera_backends():
+    """Capture backend preference for this platform.
+
+    Windows opens cameras far faster through DirectShow than through the
+    default MSMF backend, which can take several seconds - long enough to look
+    like the program has hung. macOS and Linux are left on the default.
+    """
+    if sys.platform.startswith("win"):
+        return (cv2.CAP_DSHOW, cv2.CAP_ANY)
+    return (cv2.CAP_ANY,)
+
+
 class Camera:
     """Camera, with a synthetic fallback for testing without one.
 
@@ -118,16 +130,21 @@ class Camera:
         self.cap = None
         self.frame_no = 0
 
-        if not synthetic:
-            cap = cv2.VideoCapture(index)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
-            if CAM_EXPOSURE:
-                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
-                cap.set(cv2.CAP_PROP_EXPOSURE, CAM_EXPOSURE)
+        if synthetic:
+            return
+
+        for backend in camera_backends():
+            cap = cv2.VideoCapture(index, backend)
             if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
+                if CAM_EXPOSURE:
+                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+                    cap.set(cv2.CAP_PROP_EXPOSURE, CAM_EXPOSURE)
                 self.cap = cap
+                return
+            cap.release()
 
     @property
     def ok(self) -> bool:

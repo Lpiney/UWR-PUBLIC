@@ -103,8 +103,16 @@ cd firmware/ESP32
 ~/.platformio/penv/bin/pio run -t upload       # 燒錄
 ```
 
-> 實驗室那塊板子是 **N8R8**（8 MB Flash），`platformio.ini` 的分割表已按 8 MB 設定。
-> 換成 16 MB 的板子要把 `board_build.flash_size` 和 `board_build.partitions` 一起改。
+有兩個建置環境，差別只在 Flash 分割表：
+
+| 環境 | 對應板子 | 指令 |
+|---|---|---|
+| `uwr-rov`（預設） | **N8R8**（8 MB）——實驗室那塊 | `pio run -t upload` |
+| `uwr-rov-16mb` | **N16R8**（16 MB） | `pio run -e uwr-rov-16mb -t upload` |
+
+> 8 MB 的設定也能燒進 16 MB 的板子（只用到下面 8 MB），所以預設值是安全的。
+> **反過來不行**：16 MB 的分割表燒進 8 MB 的晶片會做出開不了機的映像。
+> 不確定手上是哪塊，就用預設值。
 
 ### 筆電端
 
@@ -177,6 +185,51 @@ python3 host/console.py
 python3 host/console.py --synthetic      # 沒有攝影機，用測試圖樣
 python3 host/console.py --no-serial      # 沒有板子
 python3 host/console.py --render-preview .preview   # 輸出各狀態的版面 PNG
+```
+
+### 在另一台電腦上（Windows）
+
+第一次在新機器上跑，只有這幾點不一樣：
+
+**1. Python 依賴**
+
+```bash
+python -m pip install -r host\requirements.txt
+```
+
+裝 python.org 的 3.11，安裝時勾「Add python.exe to PATH」。
+
+**2. PlatformIO**
+
+最省事是用 VS Code 的 PlatformIO 擴充（用「開啟資料夾」打開 `firmware\ESP32`）。
+要用命令列就 `python -m pip install platformio`，之後 `pio` 就在 PATH 上。
+
+**3. 序列埠是 `COMx`，不是 `/dev/cu.*`**
+
+程式會自動認：macOS 靠埠名（`cu.usbserial-*`），Windows 靠**描述**（`USB Serial
+Port`、`USB-SERIAL CH340`、`Silicon Labs CP210x`…），因為 Windows 的埠名只有
+`COM5` 這種。認不出來它會列出所有候選，再手動指定：
+
+```bash
+python host\console.py --port COM5
+```
+
+**4. 驅動**
+
+板載橋接晶片要用對應的驅動：FT232RL → FTDI VCP，CH34x → WCH。Windows 10 以上
+多半會自動裝好；裝置管理員裡該埠有驚嘆號就是沒裝。
+
+**5. 攝影機**
+
+`console.py` 在 Windows 上走 DirectShow，比預設後端快很多（預設的要好幾秒才開，
+看起來像當掉）。被 Teams、Zoom 這類程式佔著會開不起來，先關掉。
+
+**6. 燒錄**
+
+`pio` 通常自己找得到埠；找不到就明講：
+
+```bash
+pio run -e uwr-rov-16mb -t upload --upload-port COM5
 ```
 
 ## 序列埠協定
