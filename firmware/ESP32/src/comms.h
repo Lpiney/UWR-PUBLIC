@@ -249,15 +249,19 @@ inline void tickTelemetry() {
     const Command &c = cmd();
     const thrusters::State &t = thrusters::st();
     const float mag = sqrtf(c.nx * c.nx + c.ny * c.ny);
-    const bool  link = linkOk(now);
 
-    Serial.printf(
-        "JOY X=%+.3f Y=%+.3f MAG=%.3f %s READY=%d L=%d R=%d TL=%d TR=%d EN=%d LINK=%d\n",
-        c.nx, c.ny, mag, (mag < PULSE_DEADZONE) ? "DEAD" : "OUT",
-        t.ready ? 1 : 0,
-        (int)lroundf(t.outL), (int)lroundf(t.outR),
-        t.targetL, t.targetR,
-        c.enable ? 1 : 0, link ? 1 : 0);
+    // Built into a buffer and sent through emit() rather than Serial.printf:
+    // emit() writes to both serial ports, and a board whose only connection is
+    // the UART bridge would otherwise never see a single telemetry line.
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "X=%+.3f Y=%+.3f MAG=%.3f %s READY=%d L=%d R=%d TL=%d TR=%d EN=%d LINK=%d",
+             c.nx, c.ny, mag, (mag < PULSE_DEADZONE) ? "DEAD" : "OUT",
+             t.ready ? 1 : 0,
+             (int)lroundf(t.outL), (int)lroundf(t.outR),
+             t.targetL, t.targetR,
+             c.enable ? 1 : 0, linkOk(now) ? 1 : 0);
+    emit("JOY", String(buf));
   }
 
   if ((int32_t)(now - nextSt) >= 0) {
