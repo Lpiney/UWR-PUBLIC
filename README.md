@@ -163,7 +163,8 @@ python3 host/console.py
 │ MODE  AprilTag         A  AprilTag   [ON]    │  左下 目前任務與結果
 │ target   7             B  Colour     [  ]    │  右下 按鍵提示
 │ scanned  1/3           X  WiFi       [  ]    │
-│ ids      [7]           Y  Lock       [LOCKED]│
+│ ids      [7]           RB Capture    [ON]    │
+│                        Y  Lock       [LOCKED]│
 └──────────────────────────────────────────────┘
 ```
 
@@ -176,13 +177,17 @@ python3 host/console.py
 
 | 按鍵 | 功能 |
 |---|---|
-| **A** | AprilTag 辨識（Mission 2.1） |
-| **B** | 顏色辨識（Mission 5） |
-| **X** | WiFi／Mission 1（順便讓板子立刻重取一次資料） |
+| **A** | 切到 AprilTag 模式（Mission 2.1） |
+| **B** | 切到顏色模式（Mission 5） |
+| **X** | 切到 WiFi 模式（Mission 1） |
+| **RB** | **拍一張**——在目前模式下辨識一次 |
 | **Y** | 安全鍵（解鎖／上鎖開關） |
 
-再按一次同一個鍵就回到 Manual。按鍵編號用 SDL 標準對應，第一次用真手柄跑之前
-先 `python3 host/pad_bridge.py --show-input` 核對一下。
+**A / B 只切模式**，切過去後畫面是即時預覽、不跑計算；**按 RB 才辨識一次**，
+結果凍結在那一幀。再按 RB 重拍，再按 A / B 回 Manual。
+
+按鍵編號用 SDL 標準對應，第一次用真手柄跑之前先
+`python3 host/pad_bridge.py --show-input` 核對一下。
 
 沒有硬體也能跑或檢查版面：
 

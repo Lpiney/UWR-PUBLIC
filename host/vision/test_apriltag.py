@@ -8,7 +8,7 @@ from unittest import TestCase
 import cv2
 import numpy as np
 
-from vision.apriltag import FAMILIES, AprilTagScanner, PreprocessConfig
+from vision.apriltag import FAMILIES, AprilTagScanner
 
 
 def frame_with_tags(*ids, size=(640, 480), tag_px=100, quiet=40, margin=0.20):
@@ -109,15 +109,12 @@ class AprilTagTests(TestCase):
         with self.assertRaises(ValueError):
             AprilTagScanner(families=("nonsense",))
 
-    def test_preprocessing_is_off_by_default(self):
-        # Measured against degraded frames, none of the options beat doing
-        # nothing, so enabling one has to be a deliberate act.
-        config = PreprocessConfig()
-        self.assertEqual(config.denoise, "off")
-        self.assertEqual(config.gamma, 1.0)
-        self.assertFalse(config.clahe)
-        gray = np.full((32, 32), 100, np.uint8)
-        self.assertTrue(np.array_equal(config.apply(gray), gray))
+    def test_gray_conversion_is_a_plain_conversion(self):
+        """No preprocessing: the pixel that goes in is the pixel aruco sees."""
+        scanner = AprilTagScanner()
+        frame = np.full((32, 32, 3), 100, np.uint8)
+        expected = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self.assertTrue(np.array_equal(scanner.to_gray(frame), expected))
 
 
 if __name__ == "__main__":

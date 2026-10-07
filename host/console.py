@@ -83,6 +83,12 @@ BTN_APRILTAG = 0        # A
 BTN_COLOR    = 1        # B
 BTN_WIFI     = 2        # X
 # Y (3) is the safety key - see DEFAULT_DEADMAN_BUTTON in pad_bridge.
+BTN_CAPTURE  = 5        # RB: recognize once, in whichever task is active
+
+# AprilTag capture window. Long enough to survive a frame blurred by a ripple,
+# short enough that pressing RB feels like taking a photo.
+TAG_CAPTURE_SECONDS = 0.3
+TAG_CAPTURE_HITS = 2
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 THICKNESS = 1
@@ -305,47 +311,103 @@ class Task:
         """Handle a printable key. Return True if it was consumed."""
         return False
 
+    def capture(self, ctx) -> bool:
+        """Recognize once, right now. False if this task has nothing to capture."""
+        return False
+
 
 class TaskAprilTag(Task):
-    """Mission 2.1: scan for tags and report the largest ID.
+    """Mission 2.1: find tags and report the largest ID.
 
-    The scan accumulates for as long as the task is active, so a tag seen
-    intermittently still gets confirmed.
+    Entering the task changes nothing but the display - the frame is just
+    previewed. RB (or C) runs one capture: a short window of frames is
+    collected, a tag has to appear in at least two of them to count, and the
+    last frame the tag was actually visible in is frozen with the result.
+
+    Two frames rather than one because a single frame blurred by a ripple
+    loses the tag outright; two rather than the original three because RB is
+    meant to feel like pressing a shutter.
     """
 
     name = "AprilTag"
     button = BTN_APRILTAG
     hint = "AprilTag"
 
+    def __init__(self):
+        self.capturing = False
+        self.started = 0.0
+        self.frozen = None
+
     def enter(self, ctx):
         ctx.apriltag.reset()
+        ctx.apriltag.min_hits = TAG_CAPTURE_HITS
+        self.capturing = False
+        self.frozen = None
+
+    def leave(self, ctx):
+        ctx.apriltag.reset()
+        self.capturing = False
+        self.frozen = None
+
+    def capture(self, ctx):
+        ctx.apriltag.reset()
+        self.capturing = True
+        self.started = ctx.now
+        self.frozen = None
+        return True
 
     def update(self, ctx, frame):
-        ctx.apriltag.detect(frame)
+        if not self.capturing:
+            return
+        found = ctx.apriltag.detect(frame)
+        if found:
+            # Remember a frame the tag was genuinely visible in. Corners are
+            # kept from the best view across the window, so annotating the
+            # very last frame could draw a box on a tag that has moved.
+            self.frozen = frame.copy()
+        if ctx.now - self.started >= TAG_CAPTURE_SECONDS:
+            self.capturing = False
+            if self.frozen is None:
+                self.frozen = frame.copy()      # nothing seen: freeze anyway
+
+    def view(self, ctx, frame):
+        return self.frozen if self.frozen is not None else frame
 
     def overlay(self, ctx, frame):
-        ctx.apriltag.annotate(frame)
+        if self.frozen is not None:
+            ctx.apriltag.annotate(frame)
 
     def info(self, ctx):
         s = ctx.apriltag
-        target = s.target_id
-        lines = [("MODE  AprilTag", AMBER),
-                 (f"target   {target if target is not None else '--'}",
-                  GREEN if target is not None else GREY),
-                 (f"scanned  {len(s.confirmed_ids)}/{s.expected}", WHITE),
-                 (f"ids      {s.confirmed_ids if s.confirmed_ids else '-'}", WHITE)]
-        if s.target_id is None:
-            lines.append(("hold still on a tag", GREY))
+        lines = [("MODE  AprilTag", AMBER)]
+        if self.capturing:
+            left = max(0.0, TAG_CAPTURE_SECONDS - (ctx.now - self.started))
+            lines.append((f"CAPTURING {left:.1f}s", AMBER))
+        elif self.frozen is None:
+            lines.append(("READY - press RB to capture", GREY))
+        else:
+            target = s.target_id
+            lines += [(f"target   {target if target is not None else '--'}",
+                       GREEN if target is not None else GREY),
+                      (f"scanned  {len(s.confirmed_ids)}/{s.expected}", WHITE),
+                      (f"ids      {s.confirmed_ids if s.confirmed_ids else '-'}", WHITE)]
+            if target is None:
+                lines.append(("no tag in that frame - aim and retry", GREY))
         return lines
+
+    def on_key(self, key, ctx):
+        if key == "c":
+            return self.capture(ctx)
+        return False
 
 
 class TaskColor(Task):
-    """Mission 5: find coloured poles in a short burst of frames.
+    """Mission 5: find coloured poles.
 
-    Entering the task starts a burst; when it closes, the closing frame is
-    frozen with the boxes drawn and stays on screen until C restarts it. The
-    result is a timestamped observation, not live tracking, so it must not
-    drift with the camera.
+    As with AprilTag, entering the task only previews. RB runs one burst, and
+    the closing frame is frozen with the boxes drawn, because the result is a
+    timestamped observation rather than live tracking and must not drift with
+    the camera.
     """
 
     name = "Colour"
@@ -358,14 +420,21 @@ class TaskColor(Task):
     def enter(self, ctx):
         ctx.color.clear()
         self.frozen = None
-        ctx.color.start(ctx.now)
 
     def leave(self, ctx):
         ctx.color.clear()
         self.frozen = None
         close_window(MASKS_WINDOW)
 
+    def capture(self, ctx):
+        ctx.color.clear()
+        self.frozen = None
+        ctx.color.start(ctx.now)
+        return True
+
     def update(self, ctx, frame):
+        if not ctx.color.burst.active:
+            return
         result = ctx.color.update(frame, ctx.now)
         if result is not None:
             snapshot = ctx.color.burst.snapshot
@@ -377,15 +446,13 @@ class TaskColor(Task):
     def info(self, ctx):
         c = ctx.color
         result = c.burst.result
-        order = "-".join(c.order)
-        required = c.required or "done"
         lines = [("MODE  Colour", AMBER),
-                 (f"order    {order}   next {required}", WHITE)]
+                 (f"order    {'-'.join(c.order)}   next {c.required or 'done'}", WHITE)]
         if c.burst.active:
             left = max(0.0, c.settings.seconds - (ctx.now - c.burst.started))
-            lines.append((f"SCANNING {left:.1f}s", AMBER))
+            lines.append((f"CAPTURING {left:.1f}s", AMBER))
         elif result is None:
-            lines.append(("IDLE - hold the poles and press C", GREY))
+            lines.append(("READY - press RB to capture", GREY))
         else:
             lines.append((f"status   {result['status']}", WHITE))
             if result["targets"]:
@@ -394,19 +461,17 @@ class TaskColor(Task):
                                   f"  hits {item['hits']}/{result['frames']}",
                                   POLE_COLORS.get(item["color"], WHITE)))
             else:
-                lines.append(("no pole confirmed", GREY))
+                lines.append(("no pole found - aim and retry", GREY))
         if c.roi:
             lines.append(("ROI active  (F to clear)", GREY))
-        lines.append(("C retry | N next | O roi | 1/2/3 calib", GREY))
+        lines.append(("N next | O roi | 1/2/3 calib", GREY))
         return lines
 
     def on_key(self, key, ctx):
         c = ctx.color
         if key == "c":
-            c.clear()
-            self.frozen = None
-            c.start(ctx.now)
-        elif key == "r":
+            return self.capture(ctx)
+        if key == "r":
             c.clear()
             self.frozen = None
         elif key == "n":
@@ -537,13 +602,20 @@ class Console:
         self.task = new
         self.task.enter(self)
 
+    @staticmethod
+    def _edge(pressed: list, prev: list, button: int) -> bool:
+        """True on the frame a button goes down, not while it is held."""
+        if button >= len(pressed) or not pressed[button]:
+            return False
+        return button >= len(prev) or not prev[button]
+
     def _handle_buttons(self, pressed: list, prev: list):
         for task_cls in TASKS:
-            b = task_cls.button
-            if b is None or b >= len(pressed):
-                continue
-            if pressed[b] and (b >= len(prev) or not prev[b]):
+            if task_cls.button is not None and self._edge(pressed, prev, task_cls.button):
                 self._switch(task_cls)
+        if self._edge(pressed, prev, BTN_CAPTURE):
+            if not self.task.capture(self):
+                print("nothing to capture - press A or B first")
 
     # ---- OSD ----------------------------------------------------------
     def _draw_status(self, img, telem, link, en):
@@ -616,6 +688,11 @@ class Console:
             lines.append((f"{btn_name(task_cls.button):<4} {task_cls.hint:<9}"
                           f"[{'ON' if active else '  '}]",
                           AMBER if active else GREY))
+
+        capturable = type(self.task).capture is not Task.capture
+        lines.append((f"{btn_name(BTN_CAPTURE):<4} {'Capture':<9}"
+                      f"[{'ON' if capturable else '  '}]",
+                      GREEN if capturable else GREY))
 
         btn = self.pad.deadman_button
         if not self.use_deadman:

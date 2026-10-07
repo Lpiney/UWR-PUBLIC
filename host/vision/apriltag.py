@@ -4,8 +4,12 @@ One family only: the competition notice specifies 36h11. Enabling several
 dictionaries at once cannot improve the detection rate and it can produce a
 wrong ID - and per the rules, reading the wrong tag scores zero. Every
 detected square gets tried against every enabled dictionary, so adding
-dictionaries only increases the chance of a misread. If detection is unstable,
-tune min_hits or the preprocessing, not the family list.
+dictionaries only increases the chance of a misread.
+
+No image preprocessing. Earlier versions carried denoise, gamma and CLAHE
+options that had measured worse than doing nothing on degraded test images,
+so they were removed rather than left in as switches nobody should turn on.
+If detection turns out to be unstable in the pool, min_hits is the knob.
 
 Frames come from the console; this module never opens a camera or a window.
 """
@@ -29,60 +33,6 @@ COLOR_TARGET = (0, 165, 255)     # orange: the chosen target tag
 COLOR_TAG = (0, 255, 0)          # green: confirmed, but not the target
 COLOR_PENDING = (170, 170, 170)  # grey: seen, not yet confirmed
 
-DENOISE_LEVELS = {
-    "low": (5, 50, 50),
-    "medium": (7, 75, 75),
-    "high": (9, 100, 100),
-}
-
-
-@dataclass
-class PreprocessConfig:
-    """Underwater image preprocessing: denoise -> gamma -> CLAHE.
-
-    Denoising comes first so that grain is removed before the contrast steps
-    amplify it along with everything else.
-
-    All three are off by default. Measured against synthetically degraded
-    images, none of them beat doing nothing: bilateral denoising showed no
-    gain and the strongest settings lost tags outright, and gamma correction
-    on its own was actively harmful. They are kept because real underwater
-    footage may be worse than the simulation - if you want them, compare on
-    real frames rather than trusting intuition.
-    """
-
-    denoise: str = "off"            # off / bilateral / nlmeans
-    denoise_level: str = "high"     # low / medium / high
-    gamma: float = 1.0              # 1.0 disables it
-    clahe: bool = False
-    clahe_clip: float = 2.0
-
-    def apply(self, gray):
-        if self.denoise == "bilateral":
-            d, sc, ss = DENOISE_LEVELS.get(self.denoise_level, DENOISE_LEVELS["high"])
-            # Bilateral filtering smooths within a colour region while keeping
-            # black/white edges - exactly what an AprilTag needs.
-            gray = cv2.bilateralFilter(gray, d, sc, ss)
-        elif self.denoise == "nlmeans":
-            # Better quality, but ~100 ms at 720p. Not usable live.
-            gray = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
-
-        if self.gamma != 1.0:
-            table = ((np.arange(256) / 255.0) ** (1.0 / self.gamma) * 255).astype(np.uint8)
-            gray = cv2.LUT(gray, table)
-
-        if self.clahe:
-            gray = cv2.createCLAHE(self.clahe_clip, (8, 8)).apply(gray)
-        return gray
-
-    def describe(self) -> str:
-        parts = [f"denoise:{self.denoise}"]
-        if self.denoise == "bilateral":
-            parts[0] += f"({self.denoise_level})"
-        parts.append(f"gamma:{self.gamma:.1f}")
-        parts.append(f"clahe:{'on' if self.clahe else 'off'}")
-        return "  ".join(parts)
-
 
 @dataclass
 class Sighting:
@@ -103,36 +53,31 @@ class AprilTagScanner:
     """Detects tags, accumulates sightings, and decides the target ID."""
 
     def __init__(self, families=("36h11",), mode="largest", min_hits=3,
-                 expected=3, preprocess=None, corner_refine=False):
+                 expected=3):
         """
-        families:      dictionaries to enable. Keep it to 36h11.
-        mode:          "largest" or "smallest" - which ID to report as target.
-        min_hits:      frames a tag must be seen in before it counts.
-        expected:      how many tags are on the field, for the n/3 progress.
-        corner_refine: sub-pixel corners, 30x slower. Only needed for pose
-                       estimation later; identification does not use it.
+        families: dictionaries to enable. Keep it to 36h11.
+        mode:     "largest" or "smallest" - which ID to report as target.
+        min_hits: frames a tag must be seen in before it counts.
+        expected: how many tags are on the field, for the n/3 progress.
         """
         self.detectors = []
         for name in families:
             if name not in FAMILIES:
                 raise ValueError(f"unknown family {name!r}; choose from {', '.join(FAMILIES)}")
-            params = cv2.aruco.DetectorParameters()
-            if corner_refine:
-                params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG
             dictionary = cv2.aruco.getPredefinedDictionary(FAMILIES[name])
-            self.detectors.append((name, cv2.aruco.ArucoDetector(dictionary, params)))
+            self.detectors.append((name, cv2.aruco.ArucoDetector(
+                dictionary, cv2.aruco.DetectorParameters())))
 
         self.mode = mode
         self.min_hits = min_hits
         self.expected = expected
-        self.preprocess = preprocess if preprocess is not None else PreprocessConfig()
         self.sightings: dict[int, Sighting] = {}
 
     def reset(self):
         self.sightings.clear()
 
     def to_gray(self, frame):
-        return self.preprocess.apply(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     def detect(self, frame):
         """Detect every tag in one frame and merge the result into the totals.
@@ -189,7 +134,6 @@ class AprilTagScanner:
             "scanned": len(self.confirmed_ids),
             "expected": self.expected,
             "complete": len(self.confirmed_ids) >= self.expected,
-            "preprocess": self.preprocess.describe(),
         }
 
     def annotate(self, frame):
