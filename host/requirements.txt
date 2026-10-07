@@ -1,0 +1,4 @@
+# pad_bridge.py: read the Xbox controller and talk to the board over serial.
+# pygame and pygame-ce must not be installed side by side.
+pygame-ce>=2.5.8
+pyserial>=3.5
