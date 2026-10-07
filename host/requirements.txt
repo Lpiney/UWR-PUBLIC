@@ -1,4 +1,23 @@
-# pad_bridge.py: read the Xbox controller and talk to the board over serial.
-# pygame and pygame-ce must not be installed side by side.
-pygame-ce>=2.5.8
-pyserial>=3.5
+# Dependencies for everything under host/.
+#
+# Install with:   pip install -r host/requirements.txt
+#
+# Two environments need care:
+#
+# 1) pygame and pygame-ce must never be installed side by side. Both provide
+#    the `pygame` module, so pip ends up recording two packages while only one
+#    set of files is on disk, and which one wins depends on install order.
+#    To switch between them, remove both first:
+#        pip uninstall -y pygame pygame-ce && pip install pygame-ce
+#
+# 2) OpenCV must be the desktop build, not opencv-python-headless. The vision
+#    tasks open windows with cv2.imshow, which the headless build does not
+#    have. Pin it exactly: the OpenCV 5.x API differs from 4.x.
+
+# --- controller bridge ---
+pyserial>=3.5,<4
+pygame-ce>=2.5.8,<3
+
+# --- vision tasks (AprilTag, colour recognition) ---
+numpy==2.4.6
+opencv-python==5.0.0.93
