@@ -12,5 +12,8 @@ compile_commands.json
 __pycache__/
 *.py[cod]
 
+# console.py --render-preview output
+.preview/
+
 # macOS
 .DS_Store

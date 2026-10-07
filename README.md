@@ -22,7 +22,8 @@ Xbox 手柄 ──USB──> 筆電 ──序列埠──> ESP32 ──PWM──
 | 路徑 | 內容 |
 |---|---|
 | `firmware/ESP32/` | 韌體（PlatformIO）。ROV 上唯一的 MCU 程式 |
-| `host/` | 筆電上執行的程式。手柄橋接，之後的視覺任務也放這裡 |
+| `host/console.py` | **操作台**：攝影機 + 四角畫面 + 按鍵切換任務 |
+| `host/pad_bridge.py` | 手柄 → 序列埠的橋接層。操作台用它，也可以單獨跑 |
 | `docs/` | 操作手冊 |
 
 ## 硬體接線
@@ -130,6 +131,54 @@ python3 host/pad_bridge.py --no-serial
 python3 host/pad_bridge.py --selftest
 ```
 
+### 操作台（OSD）
+
+```bash
+python3 host/console.py
+```
+
+一個行程同時握著手柄、攝影機和序列埠，畫面是 DJI 那種版面——中間是攝影機
+影像，四角是狀態面板：
+
+```
+┌──────────────────────────────────────────────┐
+│ ● LINK   UNLOCK        L 1718  ▓▓▓▓▓▓▓▓░░    │  左上 連線 + 安全鍵
+│                        R 1282  ▓▓▓▓▓▓░░░░    │  右上 兩路實際輸出脈寬
+│                                              │
+│                    CAMERA                    │  中間 攝影機影像
+│                                              │
+│ MODE  AprilTag         A  AprilTag   [ON]    │  左下 目前任務與結果
+│ ID 07  dist 1.24 m     B  Colour     [  ]    │  右下 按鍵提示
+│ CONF 0.93              X  WiFi       [  ]    │
+│                        RB Lock       [LOCKED]│
+└──────────────────────────────────────────────┘
+```
+
+**為什麼是一個行程而不是每個功能一支程式**：攝影機同一時間只能被一個行程
+打開；開 OpenCV 加暖機要一兩秒，比賽按一下鍵等不起；兩個行程搶同一支手柄也
+很亂。按鍵只在這個迴圈裡切換「目前任務」，50 Hz 的驅動迴圈照跑，所以換模式
+時馬達不會卡頓。
+
+**任務只決定畫面顯示什麼和攝影機拿來做什麼，搖桿永遠都能驅動。**
+
+| 按鍵 | 功能 |
+|---|---|
+| A | AprilTag 辨識 |
+| B | 顏色辨識 |
+| X | WiFi／Mission 1（順便讓板子立刻重取一次資料） |
+| RB | 安全鍵（解鎖／上鎖開關） |
+
+再按一次同一個鍵就回到 Manual。按鍵編號用 SDL 標準對應，第一次用真手柄跑之前
+先 `python3 host/pad_bridge.py --show-input` 核對一下。
+
+沒有硬體也能跑或檢查版面：
+
+```bash
+python3 host/console.py --synthetic      # 沒有攝影機，用測試圖樣
+python3 host/console.py --no-serial      # 沒有板子
+python3 host/console.py --render-preview .preview   # 輸出各狀態的版面 PNG
+```
+
 ## 序列埠協定
 
 純 ASCII 行協議，用序列埠監視器就能手動發指令、肉眼讀回覆。
@@ -186,10 +235,10 @@ JOY X=+0.420 Y=-0.170 MAG=0.542 OUT READY=1 L=1718 R=1282 TL=1718 TR=1282 EN=1 L
 
 ## 待辦
 
-- [ ] 筆電端畫面：中央攝影機影像、四角顯示狀態與按鍵提示
-- [ ] 攝影機與視覺任務（AprilTag、顏色辨識）併入 `host/`
-- [ ] 按鍵對應表：每個任務一個鍵
+- [ ] 把 AprilTag 與顏色辨識接進 `host/console.py` 的 TaskAprilTag / TaskColor
+      （目前這兩個任務只顯示「尚未接上」）
 - [ ] 在真船上驗證轉向方向與電調行程
+- [ ] 確認按鍵編號與軸符號（跑 `--show-input` 核對）
 
 ### 已知問題（下水前要處理）
 

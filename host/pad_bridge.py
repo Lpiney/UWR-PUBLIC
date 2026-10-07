@@ -346,6 +346,9 @@ class Board:
         self.telem = None          # most recent successfully parsed telemetry
         self.last_rx = 0.0
         self.bad_lines = 0
+        # Optional hook for lines that are not JOY telemetry (OK/ERR/EV/DATA/ST).
+        # Set by the console; left as None here so the bridge stays standalone.
+        self.on_line = None
 
     def open(self):
         import serial
@@ -361,6 +364,11 @@ class Board:
 
     def send(self, nx, ny, en):
         self.ser.write(cmd_line(nx, ny, en).encode("ascii"))
+
+    def send_raw(self, text: str):
+        """Send one protocol line by hand, for commands other than CMD.
+        The caller supplies the newline."""
+        self.ser.write(text.encode("ascii"))
 
     def poll(self):
         """Drain whatever is readable and update self.telem."""
@@ -379,6 +387,8 @@ class Board:
                 self.last_rx = time.monotonic()
             else:
                 self.bad_lines += 1
+                if self.on_line is not None:
+                    self.on_line(line)
 
     def close(self):
         if self.ser is not None:
