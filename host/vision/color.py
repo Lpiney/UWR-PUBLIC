@@ -30,6 +30,17 @@ DEFAULT_RANGES = {
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "local-config.json"
 
+# Sampling around the pointer. A square patch rather than a single pixel: one
+# pixel can land on a highlight or a shadow and read as anything, and a pole
+# is far wider than a pixel anyway.
+SAMPLE_RADIUS = 7           # half-width, so 15x15 pixels
+CALIBRATE_RADIUS = 15       # more samples, for stable thresholds
+# A patch has to be mostly coloured, and mostly one colour, to be reported.
+# Without the first test a grey pool floor or a white highlight would come
+# back as whichever band its noise happened to fall in.
+MIN_COLOURED_SHARE = 0.4
+MIN_MATCH_SHARE = 0.4
+
 
 @dataclass
 class Settings:
@@ -268,6 +279,41 @@ class Burst:
                        "targets": confirmed}
         self.snapshot = self.last_frame
         return self.result
+
+
+def box_around(x, y, radius, shape):
+    """A square box centred on (x, y), clipped to the frame."""
+    height, width = shape[:2]
+    x0, y0 = max(0, int(x) - radius), max(0, int(y) - radius)
+    x1 = min(width, int(x) + radius + 1)
+    y1 = min(height, int(y) + radius + 1)
+    return x0, y0, max(0, x1 - x0), max(0, y1 - y0)
+
+
+def sample_at(frame, x, y, ranges, radius=SAMPLE_RADIUS):
+    """Which of R/Y/B is under the pointer, or None if none of them is.
+
+    Pointing is deliberate, so there is no shape filtering here: the operator
+    has already said where to look. What is checked is that the patch is
+    genuinely coloured and that a single colour covers most of it - a patch
+    straddling the edge of two poles is not an answer.
+    """
+    x0, y0, w, h = box_around(x, y, radius, frame.shape)
+    if w <= 0 or h <= 0:
+        return None
+    hsv = cv2.cvtColor(frame[y0:y0 + h, x0:x0 + w], cv2.COLOR_BGR2HSV)
+    total = w * h
+
+    coloured = cv2.countNonZero(cv2.inRange(hsv, (0, 60, 35), (179, 255, 255)))
+    if coloured < total * MIN_COLOURED_SHARE:
+        return None
+
+    best, best_share = None, 0.0
+    for color, bands in ranges.items():
+        share = cv2.countNonZero(color_mask(hsv, bands)) / total
+        if share > best_share:
+            best, best_share = color, share
+    return best if best_share >= MIN_MATCH_SHARE else None
 
 
 def calibrate(frame, box):

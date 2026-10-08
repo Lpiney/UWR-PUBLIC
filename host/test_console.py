@@ -15,6 +15,7 @@ from console import (BTN_APRILTAG, BTN_CAPTURE, Console, Task, TaskAprilTag,
                      TaskColor, Camera, Pad)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.test_apriltag import frame_with_tags
+from vision.test_color import scene as colour_scene
 
 
 def telemetry():
@@ -67,11 +68,76 @@ class ConsoleTaskTests(TestCase):
         self.assertEqual(self.con.task.captures, 0)
         self.assertIsNone(self.con.task.result)
 
-    def test_entering_the_colour_task_does_not_start_a_burst(self):
+    def test_entering_the_colour_task_runs_nothing(self):
         self.con._switch(TaskColor)
-        self.pump(0.15, frame=self.tag_frame)
-        self.assertFalse(self.con.color.burst.active)
-        self.assertIsNone(self.con.color.burst.result)
+        self.pump(0.15, frame=colour_scene("R"))
+        self.assertIsNone(self.con.task.answer)
+
+    # ---- Colour: pointing ----
+
+    def point_at(self, x, y, frame=None):
+        """Render one frame, then leave the pointer at (x, y)."""
+        self.con.render(self.telemetry, True,
+                        frame=colour_scene("R") if frame is None else frame)
+        self.con.mouse.x, self.con.mouse.y = x, y
+
+    def test_a_capture_needs_the_pointer_over_the_picture(self):
+        """Before the mouse has ever been over the window there is nowhere
+        to look, and saying so beats reading a stale point."""
+        self.con._switch(TaskColor)
+        self.assertFalse(self.con.mouse.known)
+        self.assertFalse(self.con.task.capture(self.con))
+
+    def test_pointing_at_a_pole_names_its_colour(self):
+        self.con._switch(TaskColor)
+        self.point_at(320, 225)              # the pole in the test scene
+        self.assertTrue(self.con.task.capture(self.con))
+        self.assertEqual(self.con.task.answer, "R")
+
+    def test_pointing_at_plain_background_gives_no_answer(self):
+        """Grey pool floor is not a colour, whatever band its noise lands in."""
+        self.con._switch(TaskColor)
+        self.con.task.answer = "R"
+        self.point_at(50, 100)               # above the pole and the floor
+        self.con.task.capture(self.con)
+        self.assertIsNone(self.con.task.answer)
+
+    def test_the_last_pointer_position_is_kept(self):
+        """OpenCV sends no event when the cursor leaves the window, so the
+        last point has to stand - moving off to the controller between aiming
+        and pressing RB is the normal way to use this."""
+        self.con._switch(TaskColor)
+        self.point_at(320, 225)
+        self.assertTrue(self.con.mouse.known)
+        self.con.task.capture(self.con)
+        self.assertEqual(self.con.task.answer, "R")
+
+    def test_r_clears_the_answer(self):
+        self.con._switch(TaskColor)
+        self.point_at(320, 225)
+        self.con.task.capture(self.con)
+        self.con.task.on_key("r", self.con)
+        self.assertIsNone(self.con.task.answer)
+
+    def test_calibration_samples_around_the_pointer(self):
+        import pathlib
+        import tempfile
+
+        self.con._switch(TaskColor)
+        # Keep the written config out of the working tree.
+        self.con.color.config_path = pathlib.Path(tempfile.mkdtemp()) / "cfg.json"
+        before = [list(b) for b in self.con.color.ranges["R"]]
+
+        self.point_at(320, 225)
+        self.con.task.on_key("1", self.con)
+        self.assertNotEqual([list(b) for b in self.con.color.ranges["R"]], before)
+        self.assertTrue(self.con.color.config_path.exists())
+
+    def test_calibration_without_a_pointer_does_nothing(self):
+        self.con._switch(TaskColor)
+        before = [list(b) for b in self.con.color.ranges["Y"]]
+        self.con.task.on_key("2", self.con)
+        self.assertEqual([list(b) for b in self.con.color.ranges["Y"]], before)
 
     # ---- AprilTag: choosing the logic ----
 
@@ -194,7 +260,7 @@ class ConsoleTaskTests(TestCase):
         self.assertEqual([k for k, _ in TaskAprilTag().keys(self.con)],
                          ["L", "M", "C", "R"])
         self.assertEqual([k for k, _ in TaskColor().keys(self.con)],
-                         ["C", "N", "O", "F", "1 2 3", "D", "R"])
+                         ["C", "1 2 3", "N", "R", "O", "F", "D"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
 

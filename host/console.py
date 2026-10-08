@@ -59,8 +59,8 @@ from pad_bridge import (                       # noqa: E402
 )
 from vision.apriltag import AprilTagScanner    # noqa: E402
 from vision.color import (                     # noqa: E402
-    COLORS as POLE_COLORS, ColorDetector, calibrate,
-    annotate as annotate_color,
+    CALIBRATE_RADIUS, COLORS as POLE_COLORS, NAMES, ColorDetector,
+    box_around, calibrate, sample_at,
 )
 
 # ===========================================================================
@@ -97,6 +97,7 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 THICKNESS = 1
 
 WHITE = (255, 255, 255)
+POINTER_COLOR = (255, 255, 0)    # cyan: distinct from every panel and pole
 GREY = (150, 150, 150)
 DARK = (60, 60, 60)
 GREEN = (90, 220, 90)
@@ -259,21 +260,76 @@ def close_window(name):
         pass
 
 
-def select_box(frame, title):
-    """Let the operator drag a box, returned in original-image pixels.
+class Mouse:
+    """Where the cursor is over the console window, and any rectangle being
+    dragged.
 
-    Blocks the drive loop for as long as the selection window is open, which
-    means the board's link timeout stops the motors. That is the safe
-    direction - the operator is deliberately not driving while framing a box.
+    Replaces cv2.selectROI, which opened a second window showing a still
+    frame. Working on the live view keeps the picture - and the ROV - in
+    front of the operator, and there is no second window to lose.
+
+    OpenCV reports coordinates in image space, so a resized window needs no
+    correction here. It only reports while the cursor is over the window, so
+    the last known point is kept: pointing somewhere and moving off to press
+    a controller button is exactly the intended use.
     """
-    scale = min(1, 960 / frame.shape[1], 720 / frame.shape[0])
-    preview = cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1 else frame
-    box = cv2.selectROI(title, preview, showCrosshair=True, fromCenter=False)
-    cv2.destroyWindow(title)
-    if not box[2] or not box[3]:
-        return None
-    x, y, w, h = [round(v / scale) for v in box]
-    return x, y, min(w, frame.shape[1] - x), min(h, frame.shape[0] - y)
+
+    def __init__(self):
+        self.x = None
+        self.y = None
+        self.start = None
+        self.current = None
+        self._finished = None
+        self._unread = False
+
+    @property
+    def known(self) -> bool:
+        return self.x is not None and self.y is not None
+
+    def position(self):
+        return (self.x, self.y) if self.known else (None, None)
+
+    @property
+    def dragging(self) -> bool:
+        return self.start is not None
+
+    def on_event(self, event, x, y, flags, param):
+        if event == cv2.EVENT_MOUSEMOVE:
+            self.x, self.y = x, y
+            if self.start is not None:
+                self.current = (x, y)
+        elif event == cv2.EVENT_LBUTTONDOWN:
+            self.x, self.y = x, y
+            self.start = self.current = (x, y)
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.x, self.y = x, y
+            if self.start is not None:
+                x0, y0 = self.start
+                self._finished = (min(x0, x), min(y0, y),
+                                  abs(x - x0), abs(y - y0))
+                self._unread = True
+            self.start = self.current = None
+
+    def live_box(self):
+        """The rectangle to draw right now, while the button is held."""
+        if self.start is None or self.current is None:
+            return None
+        x0, y0 = self.start
+        x1, y1 = self.current
+        return (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+
+    def take(self):
+        """The box from the last completed drag, once. None if nothing new.
+
+        A stray click is not a box: anything under a few pixels is dropped.
+        """
+        if not self._unread:
+            return None
+        self._unread = False
+        box = self._finished
+        if box is None or box[2] < 8 or box[3] < 8:
+            return None
+        return box
 
 
 class Task:
@@ -464,10 +520,13 @@ class TaskAprilTag(Task):
 class TaskColor(Task):
     """Mission 5: find coloured poles.
 
-    As with AprilTag, entering the task only previews. RB runs one burst, and
-    the closing frame is frozen with the boxes drawn, because the result is a
-    timestamped observation rather than live tracking and must not drift with
-    the camera.
+    Point at a pole and press RB. The patch under the pointer decides which
+    colour it is, and the answer is written along the bottom of the picture
+    in that colour. Nothing runs until asked, and nothing freezes: the
+    operator is choosing where to look, which needs a live view.
+
+    Calibration works the same way - point at bare pole and press 1, 2 or 3 -
+    so the whole task is one gesture rather than two.
     """
 
     name = "Colour"
@@ -475,104 +534,147 @@ class TaskColor(Task):
     hint = "Colour"
 
     def __init__(self):
-        self.frozen = None
+        self.answer = None          # colour from the last capture, or None
+        self.pending = None         # "roi" while a ROI drag is armed
 
     def enter(self, ctx):
         ctx.color.clear()
-        self.frozen = None
+        self.answer = None
+        self.pending = None
 
     def leave(self, ctx):
         ctx.color.clear()
-        self.frozen = None
+        self.answer = None
+        self.pending = None
         close_window(MASKS_WINDOW)
 
     def capture(self, ctx):
-        ctx.color.clear()
-        self.frozen = None
-        ctx.color.start(ctx.now)
+        x, y = ctx.mouse.position()
+        if x is None:
+            print("move the mouse over the picture first, then press RB")
+            return False
+        self.answer = sample_at(ctx.last_frame, x, y, ctx.color.ranges)
+        if self.answer is None:
+            print("nothing recognisable under the pointer - aim at bare pole")
+        else:
+            print(f"color recognition = {NAMES[self.answer]}")
         return True
 
     def update(self, ctx, frame):
-        if not ctx.color.burst.active:
-            return
-        result = ctx.color.update(frame, ctx.now)
-        if result is not None:
-            snapshot = ctx.color.burst.snapshot
-            self.frozen = annotate_color(snapshot.copy(), result, ctx.color.required)
+        box = ctx.mouse.take()
+        if box is not None and self.pending == "roi":
+            ctx.color.set_roi(box)
+            self.pending = None
+            print(f"recognition ROI set to {box}")
 
-    def view(self, ctx, frame):
-        return self.frozen if self.frozen is not None else frame
+    def calibrate_from_pointer(self, ctx, color):
+        x, y = ctx.mouse.position()
+        if x is None:
+            print(f"point at bare {color} pole first, then press the key")
+            return
+        box = box_around(x, y, CALIBRATE_RADIUS, ctx.last_frame.shape)
+        bands = calibrate(ctx.last_frame, box)
+        if not bands:
+            return
+        try:
+            ctx.color.apply_calibration(color, bands)
+            ctx.color.clear()
+            print(f"{color} calibrated from the pointer, saved to "
+                  f"{ctx.color.config_path}")
+        except (ValueError, OSError) as exc:
+            print(f"calibration failed: {exc}")
+
+    def overlay(self, ctx, frame):
+        # Crosshair where the program thinks the pointer is. Without it a
+        # capture that misses the pole looks like a broken detector.
+        x, y = ctx.mouse.position()
+        if x is not None:
+            cv2.drawMarker(frame, (x, y), POINTER_COLOR, cv2.MARKER_CROSS,
+                           22, 2, cv2.LINE_AA)
+
+        live = ctx.mouse.live_box()
+        if live is not None:
+            px, py, pw, ph = live
+            cv2.rectangle(frame, (px, py), (px + pw, py + ph), AMBER, 2)
+        elif ctx.color.roi:
+            px, py, pw, ph = ctx.color.roi
+            cv2.rectangle(frame, (px, py), (px + pw, py + ph), GREEN, 2)
+
+        if self.answer is not None:
+            self._draw_answer(frame, self.answer)
+
+    @staticmethod
+    def _draw_answer(frame, color):
+        """The answer, centred along the bottom of the picture, in its own
+        colour. On a dark backing: yellow text on a sunlit pool floor would
+        otherwise be invisible."""
+        text = f"color recognition = {NAMES[color]}"
+        fs, thickness = 0.9, 2
+        (tw, th), base = cv2.getTextSize(text, FONT, fs, thickness)
+        x = max(8, (frame.shape[1] - tw) // 2)
+        y = frame.shape[0] - 24
+        cv2.rectangle(frame, (x - 14, y - th - 10), (x + tw + 14, y + base + 6),
+                      (0, 0, 0), -1)
+        cv2.putText(frame, text, (x, y), FONT, fs, POLE_COLORS[color],
+                    thickness, cv2.LINE_AA)
 
     def info(self, ctx):
         c = ctx.color
-        result = c.burst.result
-        lines = [("MODE  Colour", AMBER),
-                 (f"order    {'-'.join(c.order)}   next {c.required or 'done'}", WHITE)]
-        if c.burst.active:
-            left = max(0.0, c.settings.seconds - (ctx.now - c.burst.started))
-            lines.append((f"CAPTURING {left:.1f}s", AMBER))
-        elif result is None:
-            lines.append(("READY - press RB to capture", GREY))
+        lines = [("MODE  Colour", AMBER)]
+
+        if self.pending == "roi":
+            lines.append(("DRAG ON THE PICTURE TO SET THE ROI", AMBER))
+        elif not ctx.mouse.known:
+            lines.append(("move the mouse over the picture first", GREY))
         else:
-            lines.append((f"status   {result['status']}", WHITE))
-            if result["targets"]:
-                for item in result["targets"][:3]:
-                    lines.append((f"{item['color']}  score {item['shape_score']:.2f}"
-                                  f"  hits {item['hits']}/{result['frames']}",
-                                  POLE_COLORS.get(item["color"], WHITE)))
-            else:
-                lines.append(("no pole found - aim and retry", GREY))
+            lines.append(("READY - point at a pole, press RB", GREY))
+
+        lines.append((f"order    {'-'.join(c.order)}   next {c.required or 'done'}",
+                      WHITE))
+        if self.answer is None:
+            lines.append(("answer   --", GREY))
+        else:
+            lines.append((f"answer   {NAMES[self.answer]}",
+                          POLE_COLORS[self.answer]))
         if c.roi:
-            lines.append(("ROI active  (F to clear)", GREY))
+            lines.append(("ROI set  (F to clear)", GREY))
         return lines
 
     def keys(self, ctx):
         return [("C", "capture"),
+                ("1 2 3", "calibrate R/Y/B"),
                 ("N", "next colour"),
+                ("R", "clear answer"),
                 ("O", "select roi"),
                 ("F", "clear roi"),
-                ("1 2 3", "calibrate R/Y/B"),
-                ("D", "colour masks"),
-                ("R", "clear result")]
+                ("D", "colour masks")]
 
     def on_key(self, key, ctx):
         c = ctx.color
         if key == "c":
             return self.capture(ctx)
         if key == "r":
-            c.clear()
-            self.frozen = None
-        elif key == "n":
+            self.answer = None
+            return True
+        if key == "n":
             c.advance()
-            self.frozen = None
-        elif key == "f":
+            self.answer = None
+            return True
+        if key in ("1", "2", "3"):
+            self.calibrate_from_pointer(ctx, {"1": "R", "2": "Y", "3": "B"}[key])
+            return True
+        if key == "o":
+            self.pending = "roi"
+            return True
+        if key == "f":
             c.set_roi(None)
-            self.frozen = None
-        elif key == "o":
-            box = select_box(ctx.last_frame, "Select recognition ROI")
-            if box:
-                c.set_roi(box)
-                self.frozen = None
-        elif key in ("1", "2", "3"):
-            color = {"1": "R", "2": "Y", "3": "B"}[key]
-            box = select_box(ctx.last_frame, f"Sample the {color} pole only")
-            if box:
-                bands = calibrate(ctx.last_frame, box)
-                if bands:
-                    try:
-                        c.apply_calibration(color, bands)
-                        c.clear()
-                        self.frozen = None
-                        print(f"{color} calibrated and saved to {c.config_path}")
-                    except (ValueError, OSError) as exc:
-                        print(f"calibration failed: {exc}")
-        elif key == "d":
+            return True
+        if key == "d":
             c.show_masks = not c.show_masks
             if not c.show_masks:
                 close_window(MASKS_WINDOW)
-        else:
-            return False
-        return True
+            return True
+        return False
 
 
 class TaskWifi(Task):
@@ -635,6 +737,7 @@ class Console:
                         "data": ""}
         self.apriltag = AprilTagScanner(mode="largest", min_hits=3, expected=3)
         self.color = ColorDetector()
+        self.mouse = Mouse()
         if board is not None:
             board.on_line = self._on_board_line
 
@@ -837,6 +940,9 @@ class Console:
 
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW, 1280, 720)
+        # Callbacks only fire while waitKey is running, which it is once per
+        # loop, so the pointer stays current enough for a deliberate press.
+        cv2.setMouseCallback(WINDOW, self.mouse.on_event)
 
         try:
             while True:

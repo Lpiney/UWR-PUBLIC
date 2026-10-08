@@ -189,9 +189,12 @@ python3 host/console.py
 **A / B 只切模式**，切過去後畫面是即時預覽、不跑計算；**按 RB 才辨識一次**。
 畫面不會凍結——掃描的時候你還要操縱 ROV。
 
-**AprilTag 還多一步**：進模式後要先按 **L**（取最大 ID）或 **M**（取最小 ID）
-指定裁判當天公告的邏輯，沒選之前 RB 不會動作。之後每按一次 RB 收一次，
-結果即時更新，三次後標 `DONE`。細節見[操作指南](docs/GUIDE.md#apriltag-的完整流程mission-21)。
+- **AprilTag**：先按 **L**（取最大 ID）或 **M**（取最小 ID）指定裁判當天公告的
+  邏輯，沒選之前 RB 不會動作。之後每按一次 RB 收一次，結果即時更新。
+- **顏色**：把**滑鼠游標移到桿子上**再按 RB，答案用該顏色的字印在畫面正下方
+  （`color recognition = RED`）。校準 `1`/`2`/`3` 也是指向式的。
+
+細節見[操作指南](docs/GUIDE.md#apriltag-的完整流程mission-21)。
 
 按鍵編號用 SDL 標準對應，第一次用真手柄跑之前先
 `python3 host/pad_bridge.py --show-input` 核對一下。
