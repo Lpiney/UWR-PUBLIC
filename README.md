@@ -164,10 +164,10 @@ python3 host/console.py
 │                                  S      png  │            依目前任務而變
 │                                  C      ...  │
 │ MODE  AprilTag         A  AprilTag   [ON]    │  左下 目前任務與結果
-│ target   7             B  Colour     [  ]    │  右下（下）手柄按鍵
-│ scanned  1/3           X  WiFi       [  ]    │
-│ ids      [7]           RB Capture    [ON]    │
-│                        Y  Lock       [LOCKED]│
+│ logic    largest  (L)  B  Colour     [  ]    │  右下（下）手柄按鍵
+│ captures 3/3           X  WiFi       [  ]    │
+│ ids      [3, 7, 11]    RB Capture    [ON]    │
+│ RESULT   11  DONE      Y  Lock       [LOCKED]│
 └──────────────────────────────────────────────┘
 ```
 
@@ -186,8 +186,12 @@ python3 host/console.py
 | **RB** | **拍一張**——在目前模式下辨識一次 |
 | **Y** | 安全鍵（解鎖／上鎖開關） |
 
-**A / B 只切模式**，切過去後畫面是即時預覽、不跑計算；**按 RB 才辨識一次**，
-結果凍結在那一幀。再按 RB 重拍，再按 A / B 回 Manual。
+**A / B 只切模式**，切過去後畫面是即時預覽、不跑計算；**按 RB 才辨識一次**。
+畫面不會凍結——掃描的時候你還要操縱 ROV。
+
+**AprilTag 還多一步**：進模式後要先按 **L**（取最大 ID）或 **M**（取最小 ID）
+指定裁判當天公告的邏輯，沒選之前 RB 不會動作。之後每按一次 RB 收一次，
+結果即時更新，三次後標 `DONE`。細節見[操作指南](docs/GUIDE.md#apriltag-的完整流程mission-21)。
 
 按鍵編號用 SDL 標準對應，第一次用真手柄跑之前先
 `python3 host/pad_bridge.py --show-input` 核對一下。

@@ -86,9 +86,12 @@ BTN_WIFI     = 2        # X
 BTN_CAPTURE  = 5        # RB: recognize once, in whichever task is active
 
 # AprilTag capture window. Long enough to survive a frame blurred by a ripple,
-# short enough that pressing RB feels like taking a photo.
+# short enough that pressing RB still feels immediate.
 TAG_CAPTURE_SECONDS = 0.3
 TAG_CAPTURE_HITS = 2
+# How many tags the mission asks for. Only used for the n/3 progress readout;
+# the answer is recomputed after every capture rather than waiting for three.
+TAG_CAPTURES_EXPECTED = 3
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 THICKNESS = 1
@@ -324,16 +327,21 @@ class Task:
 
 
 class TaskAprilTag(Task):
-    """Mission 2.1: find tags and report the largest ID.
+    """Mission 2.1: identify the tags, then report the largest or smallest ID.
 
-    Entering the task changes nothing but the display - the frame is just
-    previewed. RB (or C) runs one capture: a short window of frames is
-    collected, a tag has to appear in at least two of them to count, and the
-    last frame the tag was actually visible in is frozen with the result.
+    Which of the two the judges want is announced on the day, so the operator
+    picks it first with L or M. RB then takes one capture at a time; every ID
+    confirmed in a capture is merged into a set, and the answer is recomputed
+    after each one - readable before all three are in, in case two captures
+    already cover the field.
 
-    Two frames rather than one because a single frame blurred by a ripple
-    loses the tag outright; two rather than the original three because RB is
-    meant to feel like pressing a shutter.
+    Nothing freezes. A frozen frame is the wrong tool when the operator is
+    steering while scanning: they need to see where the ROV is going. Boxes
+    are drawn while a capture window is open, and the collected IDs live in
+    the panel.
+
+    A capture that sees no tag does not count against the three, so a frame
+    lost to a ripple costs nothing but the press.
     """
 
     name = "AprilTag"
@@ -341,74 +349,116 @@ class TaskAprilTag(Task):
     hint = "AprilTag"
 
     def __init__(self):
+        self.mode = None            # None until the operator picks L or M
+        self.ids = set()            # every ID confirmed so far
+        self.captures = 0
         self.capturing = False
         self.started = 0.0
-        self.frozen = None
 
     def enter(self, ctx):
-        ctx.apriltag.reset()
-        ctx.apriltag.min_hits = TAG_CAPTURE_HITS
-        self.capturing = False
-        self.frozen = None
+        self.reset(ctx)
 
     def leave(self, ctx):
         ctx.apriltag.reset()
         self.capturing = False
-        self.frozen = None
+
+    def reset(self, ctx):
+        """Start over. Keeps the selection logic - that is set by the judges,
+        not by how the scan went."""
+        self.ids = set()
+        self.captures = 0
+        self.capturing = False
+        ctx.apriltag.reset()
+
+    def choose(self, ctx, mode):
+        self.mode = mode
+        ctx.apriltag.mode = mode
+        print(f"selection logic: {mode}")
 
     def capture(self, ctx):
+        if self.mode is None:
+            print("pick the selection logic first: L = largest, M = smallest")
+            return False
         ctx.apriltag.reset()
+        ctx.apriltag.min_hits = TAG_CAPTURE_HITS
         self.capturing = True
         self.started = ctx.now
-        self.frozen = None
         return True
 
     def update(self, ctx, frame):
         if not self.capturing:
             return
-        found = ctx.apriltag.detect(frame)
-        if found:
-            # Remember a frame the tag was genuinely visible in. Corners are
-            # kept from the best view across the window, so annotating the
-            # very last frame could draw a box on a tag that has moved.
-            self.frozen = frame.copy()
-        if ctx.now - self.started >= TAG_CAPTURE_SECONDS:
-            self.capturing = False
-            if self.frozen is None:
-                self.frozen = frame.copy()      # nothing seen: freeze anyway
+        ctx.apriltag.detect(frame)
+        if ctx.now - self.started < TAG_CAPTURE_SECONDS:
+            return
 
-    def view(self, ctx, frame):
-        return self.frozen if self.frozen is not None else frame
+        self.capturing = False
+        found = set(ctx.apriltag.confirmed_ids)
+        if found:
+            self.ids |= found
+            self.captures += 1
+        else:
+            print("no tag confirmed in that capture - it did not count")
+
+    @property
+    def result(self):
+        """The ID to report, or None while nothing has been identified."""
+        if self.mode is None or not self.ids:
+            return None
+        return max(self.ids) if self.mode == "largest" else min(self.ids)
 
     def overlay(self, ctx, frame):
-        if self.frozen is not None:
+        # Boxes only while a capture is running. Drawing them afterwards would
+        # leave boxes on a live picture pointing at where the tag used to be.
+        if self.capturing:
             ctx.apriltag.annotate(frame)
 
     def info(self, ctx):
-        s = ctx.apriltag
         lines = [("MODE  AprilTag", AMBER)]
+
+        if self.mode is None:
+            lines.append(("SELECTION LOGIC NOT SET", AMBER))
+            lines.append(("press L = largest, M = smallest", WHITE))
+            return lines
+
+        lines.append((f"logic    {'largest' if self.mode == 'largest' else 'smallest'}"
+                      f"  ({self.mode[0].upper()})", WHITE))
+
         if self.capturing:
             left = max(0.0, TAG_CAPTURE_SECONDS - (ctx.now - self.started))
             lines.append((f"CAPTURING {left:.1f}s", AMBER))
-        elif self.frozen is None:
-            lines.append(("READY - press RB to capture", GREY))
         else:
-            target = s.target_id
-            lines += [(f"target   {target if target is not None else '--'}",
-                       GREEN if target is not None else GREY),
-                      (f"scanned  {len(s.confirmed_ids)}/{s.expected}", WHITE),
-                      (f"ids      {s.confirmed_ids if s.confirmed_ids else '-'}", WHITE)]
-            if target is None:
-                lines.append(("no tag in that frame - aim and retry", GREY))
+            lines.append((f"captures {self.captures}/{TAG_CAPTURES_EXPECTED}", WHITE))
+
+        lines.append((f"ids      {sorted(self.ids) if self.ids else '-'}", WHITE))
+
+        result = self.result
+        if result is None:
+            lines.append(("RESULT   --  (press RB)", GREY))
+        else:
+            done = self.captures >= TAG_CAPTURES_EXPECTED
+            lines.append((f"RESULT   {result}" + ("  DONE" if done else ""), GREEN))
         return lines
 
     def on_key(self, key, ctx):
         if key == "c":
             return self.capture(ctx)
+        if key == "l":
+            self.choose(ctx, "largest")
+            return True
+        if key == "m":
+            self.choose(ctx, "smallest")
+            return True
+        if key == "r":
+            self.reset(ctx)
+            return True
         return False
 
     def keys(self, ctx):
-        return [("C", "capture")]
+        return [("L", "logic: largest"),
+                ("M", "logic: smallest"),
+                ("C", "capture"),
+                ("R", "reset scan")]
 
 
 class TaskColor(Task):
@@ -630,8 +680,12 @@ class Console:
             if task_cls.button is not None and self._edge(pressed, prev, task_cls.button):
                 self._switch(task_cls)
         if self._edge(pressed, prev, BTN_CAPTURE):
-            if not self.task.capture(self):
+            # A task that can capture explains its own refusals; only Manual
+            # and WiFi have nothing to say here.
+            if type(self.task).capture is Task.capture:
                 print("nothing to capture - press A or B first")
+            else:
+                self.task.capture(self)
 
     # ---- OSD ----------------------------------------------------------
     def _draw_status(self, img, telem, link, en):

@@ -64,7 +64,8 @@ class ConsoleTaskTests(TestCase):
         self.con._switch(TaskAprilTag)
         self.pump(0.15)
         self.assertIsNone(self.con.apriltag.target_id)
-        self.assertIsNone(self.con.task.frozen)
+        self.assertEqual(self.con.task.captures, 0)
+        self.assertIsNone(self.con.task.result)
 
     def test_entering_the_colour_task_does_not_start_a_burst(self):
         self.con._switch(TaskColor)
@@ -72,48 +73,93 @@ class ConsoleTaskTests(TestCase):
         self.assertFalse(self.con.color.burst.active)
         self.assertIsNone(self.con.color.burst.result)
 
-    # ---- Capture ----
+    # ---- AprilTag: choosing the logic ----
 
-    def test_capture_finds_a_tag_and_freezes_the_frame(self):
+    def test_capture_is_refused_until_the_logic_is_chosen(self):
+        """Largest or smallest is announced on the day; guessing it is a
+        zero. So nothing is captured until the operator has said which."""
         self.con._switch(TaskAprilTag)
-        self.assertIs(self.con.task.capture(self.con), True)
-        self.pump(0.6)
+        self.assertFalse(self.con.task.capture(self.con))
         self.assertFalse(self.con.task.capturing)
-        self.assertEqual(self.con.apriltag.target_id, 7)
-        self.assertIsNotNone(self.con.task.frozen)
 
-    def test_a_second_capture_replaces_the_first_result(self):
+    def test_l_and_m_set_the_selection_logic(self):
         self.con._switch(TaskAprilTag)
-        self.con.task.capture(self.con)
-        self.pump(0.6)
-        first = self.con.task.frozen
-        self.con.task.capture(self.con)
-        self.pump(0.6)
-        self.assertEqual(self.con.apriltag.target_id, 7)
-        self.assertIsNot(self.con.task.frozen, first)
+        self.con.task.on_key("l", self.con)
+        self.assertEqual(self.con.task.mode, "largest")
+        self.con.task.on_key("m", self.con)
+        self.assertEqual(self.con.task.mode, "smallest")
 
-    def test_capture_with_nothing_in_view_still_freezes(self):
-        """The operator gets a picture of what was there, not a hang."""
+    def test_the_result_follows_the_chosen_logic(self):
         self.con._switch(TaskAprilTag)
-        self.con.task.capture(self.con)
-        self.pump(0.6, frame=self.tag_frame * 0 + 128)
-        self.assertIsNone(self.con.apriltag.target_id)
-        self.assertIsNotNone(self.con.task.frozen)
+        self.con.task.ids = {3, 7, 11}
+        self.con.task.on_key("m", self.con)
+        self.assertEqual(self.con.task.result, 3)
+        self.con.task.on_key("l", self.con)
+        self.assertEqual(self.con.task.result, 11)
 
-    def test_leaving_the_task_clears_the_result(self):
+    # ---- AprilTag: capturing ----
+
+    def capture(self, frame=None):
+        """Press RB and let the capture window close."""
+        self.assertTrue(self.con.task.capture(self.con))
+        self.pump(0.6, frame=frame)
+
+    def test_a_capture_collects_the_id_without_freezing_the_picture(self):
         self.con._switch(TaskAprilTag)
-        self.con.task.capture(self.con)
-        self.pump(0.6)
-        self.assertIsNotNone(self.con.task.frozen)
+        self.con.task.on_key("l", self.con)
+        self.capture()
+        self.assertEqual(self.con.task.ids, {7})
+        self.assertEqual(self.con.task.captures, 1)
+        self.assertEqual(self.con.task.result, 7)
+        # The operator is steering while they scan, so the picture stays live.
+        live = self.con.task.view(self.con, self.tag_frame)
+        self.assertIs(live, self.tag_frame)
+
+    def test_captures_accumulate_across_presses(self):
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.capture(frame_with_tags(3))
+        self.assertEqual(self.con.task.result, 3)
+        self.capture(frame_with_tags(7))
+        self.assertEqual(self.con.task.ids, {3, 7})
+        self.assertEqual(self.con.task.captures, 2)
+        self.assertEqual(self.con.task.result, 7)
+
+    def test_a_capture_that_sees_nothing_does_not_count(self):
+        """A frame lost to a ripple costs the press, not one of the three."""
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.capture(frame=self.tag_frame * 0 + 128)
+        self.assertEqual(self.con.task.captures, 0)
+        self.assertEqual(self.con.task.ids, set())
+        self.assertIsNone(self.con.task.result)
+
+    def test_reset_clears_the_scan_but_keeps_the_logic(self):
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.capture()
+        self.con.task.on_key("r", self.con)
+        self.assertEqual(self.con.task.ids, set())
+        self.assertEqual(self.con.task.captures, 0)
+        self.assertEqual(self.con.task.mode, "largest")
+
+    def test_re_entering_the_task_clears_everything(self):
+        """Per run the judges announce the logic afresh, so it must not
+        survive leaving and coming back."""
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.capture()
         self.con._switch(TaskAprilTag)      # back to Manual
         self.con._switch(TaskAprilTag)      # in again
-        self.assertIsNone(self.con.task.frozen)
-        self.assertIsNone(self.con.apriltag.target_id)
+        self.assertIsNone(self.con.task.mode)
+        self.assertEqual(self.con.task.ids, set())
+        self.assertEqual(self.con.task.captures, 0)
 
     # ---- Button handling ----
 
     def test_rb_edge_triggers_a_capture(self):
         self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
         held = [0] * 10
         held[BTN_CAPTURE] = 1
         self.con._handle_buttons(held, [0] * 10)
@@ -121,6 +167,7 @@ class ConsoleTaskTests(TestCase):
 
     def test_holding_rb_does_not_retrigger(self):
         self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
         held = [0] * 10
         held[BTN_CAPTURE] = 1
         self.con._handle_buttons(held, held)      # already down last frame
@@ -144,7 +191,8 @@ class ConsoleTaskTests(TestCase):
     def test_every_task_declares_the_keys_it_handles(self):
         """The on-screen hint panel is built from these, so a task that
         handles a key without declaring it leaves the operator guessing."""
-        self.assertEqual(TaskAprilTag().keys(self.con), [("C", "capture")])
+        self.assertEqual([k for k, _ in TaskAprilTag().keys(self.con)],
+                         ["L", "M", "C", "R"])
         self.assertEqual([k for k, _ in TaskColor().keys(self.con)],
                          ["C", "N", "O", "F", "1 2 3", "D", "R"])
         # Manual declares nothing of its own; Q and S are added globally.
