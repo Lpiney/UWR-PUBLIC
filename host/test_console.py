@@ -260,7 +260,7 @@ class ConsoleTaskTests(TestCase):
         self.assertEqual([k for k, _ in TaskAprilTag().keys(self.con)],
                          ["L", "M", "C", "R"])
         self.assertEqual([k for k, _ in TaskColor().keys(self.con)],
-                         ["C", "1 2 3", "N", "R", "O", "F", "D"])
+                         ["C", "1 2 3", "N", "R", "D"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
 

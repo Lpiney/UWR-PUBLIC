@@ -60,7 +60,7 @@ from pad_bridge import (                       # noqa: E402
 from vision.apriltag import AprilTagScanner    # noqa: E402
 from vision.color import (                     # noqa: E402
     CALIBRATE_RADIUS, COLORS as POLE_COLORS, NAMES, ColorDetector,
-    box_around, calibrate, sample_at,
+    box_around, calibrate, masks, sample_at,
 )
 
 # ===========================================================================
@@ -261,26 +261,17 @@ def close_window(name):
 
 
 class Mouse:
-    """Where the cursor is over the console window, and any rectangle being
-    dragged.
-
-    Replaces cv2.selectROI, which opened a second window showing a still
-    frame. Working on the live view keeps the picture - and the ROV - in
-    front of the operator, and there is no second window to lose.
+    """Where the cursor is over the console window.
 
     OpenCV reports coordinates in image space, so a resized window needs no
-    correction here. It only reports while the cursor is over the window, so
-    the last known point is kept: pointing somewhere and moving off to press
-    a controller button is exactly the intended use.
+    correction. It only reports while the cursor is over the window, so the
+    last known point is kept: aiming, then moving off to the controller to
+    press RB, is the intended way to use this.
     """
 
     def __init__(self):
         self.x = None
         self.y = None
-        self.start = None
-        self.current = None
-        self._finished = None
-        self._unread = False
 
     @property
     def known(self) -> bool:
@@ -289,47 +280,8 @@ class Mouse:
     def position(self):
         return (self.x, self.y) if self.known else (None, None)
 
-    @property
-    def dragging(self) -> bool:
-        return self.start is not None
-
     def on_event(self, event, x, y, flags, param):
-        if event == cv2.EVENT_MOUSEMOVE:
-            self.x, self.y = x, y
-            if self.start is not None:
-                self.current = (x, y)
-        elif event == cv2.EVENT_LBUTTONDOWN:
-            self.x, self.y = x, y
-            self.start = self.current = (x, y)
-        elif event == cv2.EVENT_LBUTTONUP:
-            self.x, self.y = x, y
-            if self.start is not None:
-                x0, y0 = self.start
-                self._finished = (min(x0, x), min(y0, y),
-                                  abs(x - x0), abs(y - y0))
-                self._unread = True
-            self.start = self.current = None
-
-    def live_box(self):
-        """The rectangle to draw right now, while the button is held."""
-        if self.start is None or self.current is None:
-            return None
-        x0, y0 = self.start
-        x1, y1 = self.current
-        return (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
-
-    def take(self):
-        """The box from the last completed drag, once. None if nothing new.
-
-        A stray click is not a box: anything under a few pixels is dropped.
-        """
-        if not self._unread:
-            return None
-        self._unread = False
-        box = self._finished
-        if box is None or box[2] < 8 or box[3] < 8:
-            return None
-        return box
+        self.x, self.y = x, y
 
 
 class Task:
@@ -535,17 +487,12 @@ class TaskColor(Task):
 
     def __init__(self):
         self.answer = None          # colour from the last capture, or None
-        self.pending = None         # "roi" while a ROI drag is armed
 
     def enter(self, ctx):
-        ctx.color.clear()
         self.answer = None
-        self.pending = None
 
     def leave(self, ctx):
-        ctx.color.clear()
         self.answer = None
-        self.pending = None
         close_window(MASKS_WINDOW)
 
     def capture(self, ctx):
@@ -560,13 +507,6 @@ class TaskColor(Task):
             print(f"color recognition = {NAMES[self.answer]}")
         return True
 
-    def update(self, ctx, frame):
-        box = ctx.mouse.take()
-        if box is not None and self.pending == "roi":
-            ctx.color.set_roi(box)
-            self.pending = None
-            print(f"recognition ROI set to {box}")
-
     def calibrate_from_pointer(self, ctx, color):
         x, y = ctx.mouse.position()
         if x is None:
@@ -578,7 +518,6 @@ class TaskColor(Task):
             return
         try:
             ctx.color.apply_calibration(color, bands)
-            ctx.color.clear()
             print(f"{color} calibrated from the pointer, saved to "
                   f"{ctx.color.config_path}")
         except (ValueError, OSError) as exc:
@@ -591,14 +530,6 @@ class TaskColor(Task):
         if x is not None:
             cv2.drawMarker(frame, (x, y), POINTER_COLOR, cv2.MARKER_CROSS,
                            22, 2, cv2.LINE_AA)
-
-        live = ctx.mouse.live_box()
-        if live is not None:
-            px, py, pw, ph = live
-            cv2.rectangle(frame, (px, py), (px + pw, py + ph), AMBER, 2)
-        elif ctx.color.roi:
-            px, py, pw, ph = ctx.color.roi
-            cv2.rectangle(frame, (px, py), (px + pw, py + ph), GREEN, 2)
 
         if self.answer is not None:
             self._draw_answer(frame, self.answer)
@@ -622,9 +553,7 @@ class TaskColor(Task):
         c = ctx.color
         lines = [("MODE  Colour", AMBER)]
 
-        if self.pending == "roi":
-            lines.append(("DRAG ON THE PICTURE TO SET THE ROI", AMBER))
-        elif not ctx.mouse.known:
+        if not ctx.mouse.known:
             lines.append(("move the mouse over the picture first", GREY))
         else:
             lines.append(("READY - point at a pole, press RB", GREY))
@@ -636,8 +565,6 @@ class TaskColor(Task):
         else:
             lines.append((f"answer   {NAMES[self.answer]}",
                           POLE_COLORS[self.answer]))
-        if c.roi:
-            lines.append(("ROI set  (F to clear)", GREY))
         return lines
 
     def keys(self, ctx):
@@ -645,33 +572,24 @@ class TaskColor(Task):
                 ("1 2 3", "calibrate R/Y/B"),
                 ("N", "next colour"),
                 ("R", "clear answer"),
-                ("O", "select roi"),
-                ("F", "clear roi"),
                 ("D", "colour masks")]
 
     def on_key(self, key, ctx):
-        c = ctx.color
         if key == "c":
             return self.capture(ctx)
         if key == "r":
             self.answer = None
             return True
         if key == "n":
-            c.advance()
+            ctx.color.advance()
             self.answer = None
             return True
         if key in ("1", "2", "3"):
             self.calibrate_from_pointer(ctx, {"1": "R", "2": "Y", "3": "B"}[key])
             return True
-        if key == "o":
-            self.pending = "roi"
-            return True
-        if key == "f":
-            c.set_roi(None)
-            return True
         if key == "d":
-            c.show_masks = not c.show_masks
-            if not c.show_masks:
+            ctx.color.show_masks = not ctx.color.show_masks
+            if not ctx.color.show_masks:
                 close_window(MASKS_WINDOW)
             return True
         return False
@@ -994,9 +912,9 @@ class Console:
                     self._t_fps = now
 
                 cv2.imshow(WINDOW, img)
-                if self.color.show_masks and self.color.burst.masks:
-                    cv2.imshow(MASKS_WINDOW,
-                               np.hstack(list(self.color.burst.masks.values())))
+                if self.color.show_masks and self.last_frame is not None:
+                    cv2.imshow(MASKS_WINDOW, np.hstack(list(
+                        masks(self.last_frame, self.color.ranges).values())))
 
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
