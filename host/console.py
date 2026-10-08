@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+import threading
 import time
 
 import numpy as np
@@ -73,6 +74,9 @@ MASKS_WINDOW = "Colour masks"
 CAM_INDEX = 0
 CAM_WIDTH = 1280
 CAM_HEIGHT = 720
+# How far to look for a camera. Six is more than a laptop and a USB hub are
+# likely to present, and probing an index that is empty can be slow.
+CAMERA_SCAN_LIMIT = 6
 
 CAM_GAIN = 100.0        # OpenCV camera brightness, 0-200 (100 = untouched)
 CAM_EXPOSURE = 0.0      # 0 = auto. Set negative for manual on some webcams.
@@ -124,47 +128,182 @@ def camera_backends():
     return (cv2.CAP_ANY,)
 
 
-class Camera:
-    """Camera, with a synthetic fallback for testing without one.
+def probe_camera(index):
+    """Open one camera index and report (width, height, delivers_frames), or
+    None if it will not open. The device is closed again immediately.
 
-    The fallback is not decoration: it lets the whole console be exercised on
-    a desk with no camera attached, which is exactly when the OSD layout gets
-    adjusted.
+    Used by --list-cameras, so picking the right index is a look rather than
+    a guess. Opening a camera that is not there can be slow, which is why the
+    scan is a separate command rather than something the console does at
+    startup.
     """
+    for backend in camera_backends():
+        cap = cv2.VideoCapture(index, backend)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        delivers = False
+        for _ in range(6):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                size = (frame.shape[1], frame.shape[0])
+                delivers = True
+                break
+            time.sleep(0.05)
+        cap.release()
+        return size[0], size[1], delivers
+    return None
+
+
+def list_cameras(limit=CAMERA_SCAN_LIMIT) -> int:
+    print(f"probing camera indices 0-{limit - 1}, each opened and closed again")
+    found = []
+    for index in range(limit):
+        result = probe_camera(index)
+        if result is None:
+            print(f"  {index}: -")
+            continue
+        width, height, delivers = result
+        note = "" if delivers else "   (opened, but no frames)"
+        print(f"  {index}: {width}x{height}{note}")
+        if delivers:
+            found.append(index)
+    if not found:
+        print("\nNo usable camera. On macOS, check System Settings -> Privacy "
+              "& Security -> Camera; a denied permission looks exactly like "
+              "this.")
+        return 2
+    print(f"\nusable: {', '.join(str(i) for i in found)}")
+    print(f"pick one with:  --camera {found[0]}")
+    return 0
+
+
+class Camera:
+    """Camera, read on a background thread.
+
+    Reading on the main loop would stall the whole console whenever the
+    camera hiccups, and a stalled console stops sending drive commands - the
+    board would drop the motors to neutral mid-manoeuvre. A worker keeps the
+    newest frame available without the main loop ever waiting on the device.
+
+    It is also what makes reconnect possible. Reopening a camera that has been
+    unplugged takes seconds; seconds the operator would otherwise spend
+    unable to steer while the picture was gone anyway.
+
+    On reconnect only the index that last worked is retried. Scanning for a
+    replacement risks silently picking a different camera - the laptop's
+    built-in one, say - and showing the operator the ceiling instead of the
+    pool. If the camera comes back elsewhere, --list-cameras will say where.
+    """
+
+    # Consecutive failed reads before the camera is declared gone.
+    LOST_AFTER = 15
+    RESCAN_SECONDS = 1.0        # how often to retry while it is gone
 
     def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT,
                  synthetic=False):
         self.synthetic = synthetic
-        self.cap = None
+        self.index = index
+        self.width = width
+        self.height = height
+        self.lost = False
         self.frame_no = 0
+
+        self._cap = None
+        self._frame = None
+        self._misses = 0
+        self._next_try = 0.0
+        self._stop = threading.Event()
+        self._thread = None
 
         if synthetic:
             return
 
-        for backend in camera_backends():
-            cap = cv2.VideoCapture(index, backend)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        # At startup, look for a camera rather than giving up on the first
+        # index: an index that is wrong is a guess, not a statement.
+        self._open(scan=True)
+        if self._cap is None:
+            self.lost = True
+            return
+
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+        # Wait for the first frame so a camera that opens but never delivers
+        # is reported at startup rather than as a window that stays black.
+        deadline = time.monotonic() + 3.0
+        while self._frame is None and time.monotonic() < deadline:
+            if self.lost:
+                break
+            time.sleep(0.02)
+
+    def _open(self, scan=False) -> bool:
+        """Try to open the camera. scan=True looks past the requested index."""
+        order = [self.index]
+        if scan:
+            order += [i for i in range(CAMERA_SCAN_LIMIT) if i != self.index]
+
+        for index in order:
+            for backend in camera_backends():
+                cap = cv2.VideoCapture(index, backend)
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
                 cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
                 if CAM_EXPOSURE:
                     cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
                     cap.set(cv2.CAP_PROP_EXPOSURE, CAM_EXPOSURE)
-                self.cap = cap
-                return
-            cap.release()
+                self._cap = cap
+                if index != self.index:
+                    print(f"camera {self.index} was not there; using {index}")
+                self.index = index
+                return True
+        self._cap = None
+        return False
+
+    def _run(self):
+        while not self._stop.is_set():
+            if self._cap is None:
+                if time.monotonic() < self._next_try:
+                    time.sleep(0.1)
+                    continue
+                self._next_try = time.monotonic() + self.RESCAN_SECONDS
+                if self._open():
+                    self.lost = False
+                    print(f"camera {self.index} reconnected")
+                continue
+
+            ok, frame = self._cap.read()
+            if ok and frame is not None:
+                # A fresh array each read, so publishing it needs no lock:
+                # the worker never writes into a frame it has handed over.
+                self._frame = frame
+                self.frame_no += 1
+                self._misses = 0
+                self.lost = False
+            else:
+                self._misses += 1
+                if self._misses >= self.LOST_AFTER:
+                    self._cap.release()
+                    self._cap = None
+                    self.lost = True
+                    self._next_try = 0.0     # try again at once
+                    print("camera lost - unplugged, or taken by another program")
+
+    def read(self):
+        """The newest frame, or None. Never blocks on the device."""
+        if self.synthetic:
+            return self._synthetic()
+        return self._frame
 
     @property
     def ok(self) -> bool:
-        return self.synthetic or self.cap is not None
-
-    def read(self):
-        if self.synthetic:
-            return self._synthetic()
-        if self.cap is None:
-            return None
-        ok, frame = self.cap.read()
-        return frame if ok else None
+        """Usable right now: a synthetic pattern, or frames actually arriving."""
+        return self.synthetic or self._frame is not None
 
     def _synthetic(self):
         """A moving pattern, so the OSD is judged against a non-uniform image."""
@@ -186,9 +325,13 @@ class Camera:
         return frame
 
     def release(self):
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.5)
+            self._thread = None
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
 
 
 # ===========================================================================
@@ -732,6 +875,11 @@ class Console:
                     THICKNESS, cv2.LINE_AA)
         _, py, _, ph = draw_panel(img, 16, 40, [(lock_txt, lock_col)],
                                   anchor="tl", fs=0.5)
+        # A black picture with no explanation is the worst failure mode: the
+        # operator cannot tell a dead camera from a dark pool.
+        if self.camera.lost:
+            _, py, _, ph = draw_panel(img, 16, py + ph + 4, [("NO CAMERA", RED)],
+                                      anchor="tl", fs=0.5)
         if self.show_help:
             draw_panel(img, 16, py + ph + 4, [(f"{self.fps:4.1f} fps", GREY)],
                        anchor="tl", fs=0.42, pad=6)
@@ -1012,7 +1160,11 @@ def main() -> int:
     p.add_argument("--deadman", type=int, default=DEFAULT_DEADMAN_BUTTON,
                    help="safety key button number "
                         f"(default {DEFAULT_DEADMAN_BUTTON}, which is Y)")
-    p.add_argument("--camera", type=int, default=CAM_INDEX, help="camera index")
+    p.add_argument("--camera", type=int, default=CAM_INDEX,
+                   help="camera index to prefer (others are tried if it is not "
+                        "there; --list-cameras says which are)")
+    p.add_argument("--list-cameras", action="store_true",
+                   help="probe camera indices and exit")
     p.add_argument("--synthetic", action="store_true",
                    help="no camera: draw the OSD over a test pattern")
     p.add_argument("--no-help", action="store_true", help="hide the fps readout")
@@ -1024,6 +1176,8 @@ def main() -> int:
     p.add_argument("--invert-y", action="store_true", help="negate Y")
     args = p.parse_args()
 
+    if args.list_cameras:
+        return list_cameras()
     if args.render_preview:
         return render_preview(pathlib.Path(args.render_preview))
 
@@ -1079,10 +1233,14 @@ def main() -> int:
 
     camera = Camera(args.camera, synthetic=args.synthetic)
     if not camera.ok:
-        print(f"Camera {args.camera} did not open. Use --synthetic to run the "
-              "console without one, or --camera N to pick another index.")
+        print(f"No camera delivered frames (tried from index {args.camera}). "
+              "Run --list-cameras to see what is attached, or --synthetic to "
+              "run without one.")
         return 2
-    print("camera: synthetic test pattern" if args.synthetic else "camera: ok")
+    if args.synthetic:
+        print("camera: synthetic test pattern")
+    else:
+        print(f"camera: index {camera.index}")
 
     console = Console(pad, board, camera, not args.no_deadman,
                       show_help=not args.no_help)

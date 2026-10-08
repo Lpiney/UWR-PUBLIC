@@ -11,8 +11,8 @@ from unittest import TestCase
 
 import cv2
 
-from console import (BTN_APRILTAG, BTN_CAPTURE, Console, Task, TaskAprilTag,
-                     TaskColor, Camera, Pad)
+from console import (BTN_APRILTAG, BTN_CAPTURE, CAM_HEIGHT, CAM_WIDTH, Console,
+                     Task, TaskAprilTag, TaskColor, Camera, Pad)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.test_apriltag import frame_with_tags
 from vision.test_color import scene as colour_scene
@@ -263,6 +263,36 @@ class ConsoleTaskTests(TestCase):
                          ["C", "1 2 3", "N", "R", "D"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
+
+
+class CameraTests(TestCase):
+
+    def test_the_synthetic_camera_always_reports_frames(self):
+        camera = Camera(synthetic=True)
+        self.assertTrue(camera.ok)
+        frame = camera.read()
+        self.assertEqual(frame.shape[:2], (CAM_HEIGHT, CAM_WIDTH))
+        camera.release()
+
+    def test_a_lost_camera_is_announced_rather_than_left_black(self):
+        """A black picture with no explanation is the worst failure mode: the
+        operator cannot tell a dead camera from a dark pool."""
+        con = make_console()
+        con.camera.lost = True
+        con._switch(TaskAprilTag)
+        image = con.render(telemetry(), True, frame=frame_with_tags(7))
+        self.assertEqual(image.shape[2], 3)
+
+    def test_a_camera_that_never_opened_is_not_ok(self):
+        """Startup must fail loudly rather than open a window that stays
+        black - the operator would have no idea why."""
+        # Index far past anything a machine would present.
+        camera = Camera(index=99)
+        try:
+            self.assertFalse(camera.ok)
+            self.assertIsNone(camera.read())
+        finally:
+            camera.release()
 
 
 if __name__ == "__main__":
