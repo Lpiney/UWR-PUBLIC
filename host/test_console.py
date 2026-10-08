@@ -12,7 +12,7 @@ from unittest import TestCase
 import cv2
 
 from console import (BTN_APRILTAG, BTN_CAPTURE, CAM_HEIGHT, CAM_WIDTH, Console,
-                     Task, TaskAprilTag, TaskColor, Camera, Pad)
+                     Task, TaskAprilTag, TaskColor, Camera, Pad, vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.test_apriltag import frame_with_tags
 from vision.test_color import scene as colour_scene
@@ -238,6 +238,18 @@ class ConsoleTaskTests(TestCase):
         held[BTN_CAPTURE] = 1
         self.con._handle_buttons(held, held)      # already down last frame
         self.assertFalse(self.con.task.capturing)
+
+    def test_the_vertical_row_reads_as_a_direction(self):
+        """One row, labelled by direction: the thruster has a single pulse
+        width, so UP and DOWN are the two ends of the same number."""
+        self.assertEqual(vertical_label(2000), "UP")
+        self.assertEqual(vertical_label(1600), "UP")
+        self.assertEqual(vertical_label(1000), "DOWN")
+        self.assertEqual(vertical_label(1400), "DOWN")
+        # Deadband, so the label does not flicker while the value settles.
+        for us in (1500, 1501, 1502, 1499, 1498):
+            with self.subTest(us=us):
+                self.assertEqual(vertical_label(us), "HOLD")
 
     def test_a_button_selects_the_tag_task(self):
         pressed = [0] * 10

@@ -137,7 +137,10 @@ void loop() {
   if (comms::linkOk(now) && c.enable) {
     int l = 0, r = 0;
     mixToTargets(c.nx, c.ny, l, r);
-    thrusters::setTarget(l, r);
+    // The vertical thruster takes vz straight through. The host has already
+    // resolved the two triggers into one signed value - including the rule
+    // that pressing both at once means stop - so there is nothing to mix.
+    thrusters::setTarget(l, r, unitToPulse(c.vz));
   } else {
     thrusters::setNeutral();
   }

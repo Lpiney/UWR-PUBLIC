@@ -27,6 +27,7 @@ struct Data {
   int    neutral     = ESC_US_NEUTRAL;    // ESC neutral pulse width
   int    trimL       = 0;                 // left thruster trim (us), mechanical offset
   int    trimR       = 0;                 // right thruster trim
+  int    trimV       = 0;                 // vertical thruster trim
   int    fsMs        = LINK_TIMEOUT_MS;   // link timeout before forcing neutral
   int    pollMs      = 2000;              // how often to fetch from HTTP
   int    wifiRetryMs = WIFI_RETRY_MS;     // association retry interval
@@ -82,6 +83,7 @@ inline void clampAll() {
   p.neutral     = constrain(p.neutral, ESC_US_MIN, ESC_US_MAX);
   p.trimL       = constrain(p.trimL, -200, 200);
   p.trimR       = constrain(p.trimR, -200, 200);
+  p.trimV       = constrain(p.trimV, -200, 200);
   p.fsMs        = constrain(p.fsMs, 100, 5000);
   p.pollMs      = constrain(p.pollMs, 200, 60000);
   p.wifiRetryMs = constrain(p.wifiRetryMs, 3000, 120000);
@@ -97,6 +99,7 @@ inline void begin() {
   p.neutral     = nvs().getInt("neutral",     p.neutral);
   p.trimL       = nvs().getInt("trimL",       p.trimL);
   p.trimR       = nvs().getInt("trimR",       p.trimR);
+  p.trimV       = nvs().getInt("trimV",       p.trimV);
   p.fsMs        = nvs().getInt("fsMs",        p.fsMs);
   p.pollMs      = nvs().getInt("pollMs",      p.pollMs);
   p.wifiRetryMs = nvs().getInt("wifiRetry",   p.wifiRetryMs);
@@ -118,8 +121,8 @@ inline void reset() {
 
 inline bool known(const String &key) {
   return key == "ssid" || key == "pass" || key == "url" || key == "neutral" ||
-         key == "trimL" || key == "trimR" || key == "fsMs" || key == "pollMs" ||
-         key == "wifiRetryMs";
+         key == "trimL" || key == "trimR" || key == "trimV" || key == "fsMs" ||
+         key == "pollMs" || key == "wifiRetryMs";
 }
 
 inline bool set(const String &key, const String &val) {
@@ -137,6 +140,8 @@ inline bool set(const String &key, const String &val) {
     p.trimL = val.toInt();   nvs().putInt("trimL", p.trimL);
   } else if (key == "trimR") {
     p.trimR = val.toInt();   nvs().putInt("trimR", p.trimR);
+  } else if (key == "trimV") {
+    p.trimV = val.toInt();   nvs().putInt("trimV", p.trimV);
   } else if (key == "fsMs") {
     p.fsMs = val.toInt();    nvs().putInt("fsMs", p.fsMs);
   } else if (key == "pollMs") {
@@ -158,6 +163,7 @@ inline String get(const String &key) {
   if (key == "neutral")     return String(p.neutral);
   if (key == "trimL")       return String(p.trimL);
   if (key == "trimR")       return String(p.trimR);
+  if (key == "trimV")       return String(p.trimV);
   if (key == "fsMs")        return String(p.fsMs);
   if (key == "pollMs")      return String(p.pollMs);
   if (key == "wifiRetryMs") return String(p.wifiRetryMs);
@@ -170,6 +176,7 @@ inline String dump() {
          " url=" + (p.url.length() ? p.url : String("(unset)")) +
          " neutral=" + String(p.neutral) +
          " trimL=" + String(p.trimL) + " trimR=" + String(p.trimR) +
+         " trimV=" + String(p.trimV) +
          " fsMs=" + String(p.fsMs) + " pollMs=" + String(p.pollMs) +
          " wifiRetryMs=" + String(p.wifiRetryMs);
 }

@@ -13,14 +13,18 @@
 //    19 / 20     native USB D- / D+, needed for comms
 //    43 / 44     UART0 (the "COM" port), keep for debug output
 //    0/3/45/46   strapping pins, they have a level requirement at boot
-//  Of what is left, 4 and 5 are the cleanest and both are broken out.
+//  Of what is left, 4, 5 and 6 are the cleanest and all three are broken out.
+//  GPIO1-10 are also the ADC1 channels, unused here since the stick lives on
+//  the laptop.
 // ---------------------------------------------------------------------------
-#define PIN_ESC_L 4
+#define PIN_ESC_L 4      // left/right thrusters
 #define PIN_ESC_R 5
+#define PIN_ESC_V 6      // vertical thruster, driven by the two triggers
 
-// LEDC channels (the S3 has 8; pick two nobody else uses)
+// LEDC channels (the S3 has 8; pick three nobody else uses)
 #define ESC_CH_L 0
 #define ESC_CH_R 1
+#define ESC_CH_V 2
 
 // ---------------------------------------------------------------------------
 //  ESC PWM

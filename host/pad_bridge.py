@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from typing import NamedTuple
 
 # ---- Axis convention (must match the firmware) ----
 # Target: stick right = nx > 0, stick up = ny > 0.
@@ -59,6 +60,21 @@ import time
 PAD_X_SIGN = +1.0
 PAD_Y_SIGN = -1.0
 
+# ---- Triggers: the vertical thruster ----
+# RT drives up, LT drives down. These are analogue axes, not buttons, and
+# their resting reading is not zero - a raw HID trigger rests at one end of
+# its range - so the offset has to come out before the value means anything.
+#
+# The axis numbers are the one part of this file that is still a guess, and
+# they MUST be checked with  --show-input  before the first run. This project
+# has read an axis number out of a specification and been wrong about it more
+# than once; the check costs ten seconds.
+TRIGGER_AXIS_LT = 4
+TRIGGER_AXIS_RT = 5
+TRIGGER_REST = -1.0         # raw reading, trigger untouched
+TRIGGER_FULL = +1.0         # raw reading, trigger fully pressed
+TRIGGER_DEADZONE = 0.08
+
 DEFAULT_AXIS_X = 0
 DEFAULT_AXIS_Y = 1
 DEFAULT_DEADMAN_BUTTON = 3      # Y, under SDL's standard gamepad mapping
@@ -74,6 +90,45 @@ BTN_NAMES = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB",
 
 def btn_name(n) -> str:
     return BTN_NAMES.get(n, f"btn{n}")
+
+
+def trigger_amount(raw, deadzone=TRIGGER_DEADZONE) -> float:
+    """A trigger's raw axis reading -> 0..1, rest offset and deadzone removed.
+
+    Rescaled rather than cut, so the thrust starts from zero as the trigger
+    leaves the deadzone instead of jumping to it.
+    """
+    span = TRIGGER_FULL - TRIGGER_REST
+    amount = (raw - TRIGGER_REST) / span if span else 0.0
+    amount = max(0.0, min(1.0, amount))
+    if amount <= deadzone:
+        return 0.0
+    return (amount - deadzone) / (1.0 - deadzone)
+
+
+def vertical_throttle(lt_raw, rt_raw) -> float:
+    """The two triggers -> one signed vertical throttle, -1..+1.
+
+    RT drives up, LT drives down. Both at once is a contradictory command, so
+    it stops rather than picking a winner: on a vertical thruster a wrong
+    choice is a wrong direction, and the operator meant neither.
+    """
+    up = trigger_amount(rt_raw)
+    down = trigger_amount(lt_raw)
+    if up > 0.0 and down > 0.0:
+        return 0.0
+    return up - down
+
+
+class PadState(NamedTuple):
+    """One reading of the controller."""
+
+    nx: float          # -1..+1, +x is right
+    ny: float          # -1..+1, +y is forward
+    vz: float          # -1..+1, +z is up
+    deadman: bool      # safety key held down
+    axes: list         # raw axes, for --show-input
+    pressed: list      # raw button states
 
 
 # ===========================================================================
@@ -139,10 +194,10 @@ class Pad:
     def connected(self) -> bool:
         return self.js is not None
 
-    def read(self):
-        """Return (nx, ny, deadman, raw_axes, raw_button_state)."""
+    def read(self) -> PadState:
+        """Read the controller once."""
         if self.js is None:
-            return 0.0, 0.0, False, [], False
+            return PadState(0.0, 0.0, 0.0, False, [], [])
         axes = [self.js.get_axis(i) for i in range(self.js.get_numaxes())]
 
         def axis(i):
@@ -156,9 +211,13 @@ class Pad:
         nb = self.js.get_numbuttons()
         pressed = [self.js.get_button(i) for i in range(nb)]
         idx = self.deadman_button
-        # idx may be None before the safety key has been learned.
+        # idx may be None before a safety key has been decided on.
         deadman = bool(pressed[idx]) if (idx is not None and 0 <= idx < nb) else False
-        return nx, ny, deadman, axes, pressed
+
+        return PadState(nx, ny,
+                        vertical_throttle(axis(TRIGGER_AXIS_LT),
+                                          axis(TRIGGER_AXIS_RT)),
+                        deadman, axes, pressed)
 
     def pressed_buttons(self) -> set:
         """Set of button numbers currently down."""
@@ -244,11 +303,13 @@ class Telemetry:
     def __init__(self):
         self.x = 0.0
         self.y = 0.0
+        self.z = 0.0
         self.mag = 0.0
         self.in_dead = True
         self.ready = False
         self.l_us = PULSE_NEUTRAL
         self.r_us = PULSE_NEUTRAL
+        self.v_us = PULSE_NEUTRAL
         self.tl_us = PULSE_NEUTRAL
         self.tr_us = PULSE_NEUTRAL
         self.en = False        # safety key unlocked on the host side
@@ -291,11 +352,13 @@ def parse_joy(line: str, t: Telemetry) -> bool:
 
     t.x = flt("X", t.x)
     t.y = flt("Y", t.y)
+    t.z = flt("Z", t.z)
     t.mag = flt("MAG", t.mag)
     t.in_dead = "DEAD" in bare
     t.ready = num("READY", 1) == 1
     t.l_us = num("L", PULSE_NEUTRAL)
     t.r_us = num("R", PULSE_NEUTRAL)
+    t.v_us = num("V", PULSE_NEUTRAL)
     t.tl_us = num("TL", t.l_us)
     t.tr_us = num("TR", t.r_us)
     t.en = num("EN", 0) == 1
@@ -376,10 +439,11 @@ def diagnose_no_telemetry(port: str) -> str:
             "firmware, which emits a JOY line continuously.")
 
 
-def cmd_line(nx: float, ny: float, en: bool) -> str:
+def cmd_line(nx: float, ny: float, vz: float, en: bool) -> str:
     """The line the laptop sends. The format must match parseCmd() in the
-    firmware's comms.h."""
-    return f"CMD nx={nx:+.3f} ny={ny:+.3f} en={1 if en else 0}\n"
+    firmware's comms.h - including vz, which the board treats as optional so
+    that an older host keeps working."""
+    return f"CMD nx={nx:+.3f} ny={ny:+.3f} vz={vz:+.3f} en={1 if en else 0}\n"
 
 
 class Board:
@@ -408,8 +472,8 @@ class Board:
         except Exception:
             pass
 
-    def send(self, nx, ny, en):
-        self.ser.write(cmd_line(nx, ny, en).encode("ascii"))
+    def send(self, nx, ny, vz, en):
+        self.ser.write(cmd_line(nx, ny, vz, en).encode("ascii"))
 
     def send_raw(self, text: str):
         """Send one protocol line by hand, for commands other than CMD.
@@ -439,7 +503,7 @@ class Board:
     def close(self):
         if self.ser is not None:
             try:
-                self.send(0.0, 0.0, False)      # leave the board neutral
+                self.send(0.0, 0.0, 0.0, False)      # leave the board neutral
                 time.sleep(0.05)
             except Exception:
                 pass
@@ -457,17 +521,23 @@ def show_input(pad: Pad) -> int:
     """Read the controller only: print both the raw axes and the values that
     would be sent, side by side, so a wrong sign is obvious at a glance.
     """
+    trigger_axes = (TRIGGER_AXIS_LT, TRIGGER_AXIS_RT)
     print("Input diagnostic: controller only, no serial, nothing sent.")
-    print("Do three things, holding each for 2 seconds:")
+    print("Do four things, holding each for 2 seconds:")
     print("  1) push the left stick fully up")
     print("  2) push it fully down")
     print("  3) push it fully right")
+    print("  4) squeeze the right trigger, then the left one")
     print("")
     print("Watch the 'will send' column:")
-    print("  up -> Y must be positive; down -> Y negative; right -> X positive.")
-    print("  If any of those is wrong, flip the matching sign coefficient at the")
-    print("  top of this file (PAD_X_SIGN / PAD_Y_SIGN), or pass --invert-x /")
-    print("  --invert-y for a temporary override.")
+    print("  up -> Y positive, down -> Y negative, right -> X positive")
+    print("  RT -> Z positive, LT -> Z negative")
+    print("  If any of those is wrong, check the constants at the top of this")
+    print("  file (PAD_X_SIGN / PAD_Y_SIGN / TRIGGER_AXIS_LT / TRIGGER_AXIS_RT).")
+    print("")
+    print(f"LT and RT are shown raw. Untouched they should read about "
+          f"{TRIGGER_REST:+.1f}; if they do not, set TRIGGER_REST to whatever")
+    print("they actually rest at - the mapping is meaningless without it.")
     print("Press the buttons too; their numbers appear on the right.\n")
     while True:
         pad.pump()
@@ -476,16 +546,21 @@ def show_input(pad: Pad) -> int:
                   end="", flush=True)
             time.sleep(0.3)
             continue
-        nx, ny, _, axes, _ = pad.read()
+        state = pad.read()
+        moving = " ".join(f"axis{i}={v:+.2f}" for i, v in enumerate(state.axes)
+                          if abs(v) > 0.25 and i not in trigger_axes)
+        triggers = " ".join(
+            f"{name}={state.axes[i] if i < len(state.axes) else 0.0:+.2f}"
+            for name, i in (("LT", TRIGGER_AXIS_LT), ("RT", TRIGGER_AXIS_RT)))
         buttons = sorted(pad.pressed_buttons())
-        moving = " ".join(f"axis{i}={v:+.2f}" for i, v in enumerate(axes) if abs(v) > 0.25)
-        line = (f"raw {moving:44s} | will send X{nx:+.2f} Y{ny:+.2f} | "
+        line = (f"raw {moving:36s} | {triggers} | "
+                f"will send X{state.nx:+.2f} Y{state.ny:+.2f} Z{state.vz:+.2f} | "
                 f"buttons {buttons if buttons else ''}")
         print(f"\r{line[:170]:170s}", end="", flush=True)
         time.sleep(0.05)
 
 
-def draw_status(pad, board, nx, ny, en, sent, use_deadman, latched=True):
+def draw_status(pad, board, nx, ny, vz, en, sent, use_deadman, latched=True):
     pad_txt = "pad ok" if pad.connected else "pad LOST (neutral)"
     if not use_deadman:
         lock_txt = "disabled (always live)"
@@ -501,13 +576,13 @@ def draw_status(pad, board, nx, ny, en, sent, use_deadman, latched=True):
     else:
         t = board.telem
         age = (time.monotonic() - board.last_rx) * 1000
-        board_txt = (f"board L={t.l_us:4d} R={t.r_us:4d} "
+        board_txt = (f"board L={t.l_us:4d} R={t.r_us:4d} V={t.v_us:4d} "
                      f"{'LINK ok' if t.link else 'LINK LOST'} "
                      f"{'unlocked' if t.en else 'locked'} "
                      f"({age:.0f} ms ago)")
 
-    line = (f"{pad_txt} | stick X{nx:+.2f} Y{ny:+.2f} | {lock_txt:22s} | "
-            f"sent {sent:6d} | {board_txt}")
+    line = (f"{pad_txt} | stick X{nx:+.2f} Y{ny:+.2f} Z{vz:+.2f} | "
+            f"{lock_txt:22s} | sent {sent:6d} | {board_txt}")
     print(f"\r{line[:170]:170s}", end="", flush=True)
 
 
@@ -533,9 +608,12 @@ def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
             pad.pump()
 
             if pad.connected:
-                nx, ny, key_down, _, _ = pad.read()
+                state = pad.read()
+                nx, ny, vz = state.nx, state.ny, state.vz
+                key_down = state.deadman
             else:
-                nx, ny, key_down = 0.0, 0.0, False      # pad lost -> neutral now
+                # Pad lost: everything to neutral, now.
+                nx, ny, vz, key_down = 0.0, 0.0, 0.0, False
 
             if not use_deadman:
                 en = True
@@ -554,7 +632,7 @@ def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
                 t_last = now
                 if board is not None:
                     try:
-                        board.send(nx, ny, en)
+                        board.send(nx, ny, vz, en)
                         sent += 1
                     except Exception as exc:
                         print(f"\nserial write failed: {exc}")
@@ -573,7 +651,7 @@ def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
             # screen is plenty and far easier to read.
             if now - t_draw >= 0.1:
                 t_draw = now
-                draw_status(pad, board, nx, ny, en, sent, use_deadman,
+                draw_status(pad, board, nx, ny, vz, en, sent, use_deadman,
                             latched=latch.locked)
             time.sleep(0.02)
     except KeyboardInterrupt:
@@ -723,48 +801,70 @@ def selftest() -> int:
     # ---- 2. Axis convention: right = +nx, up = +ny ----
     print("\n[2] axis convention - up gives positive ny, right gives positive nx")
     p = make_pad(axes=(0.83, 0.0))
-    nx = p.read()[0]
-    check("axis0=+0.83 (right) -> nx=+0.83", abs(nx - 0.83) < 1e-6, f"nx={nx}")
+    check("axis0=+0.83 (right) -> nx=+0.83", abs(p.read().nx - 0.83) < 1e-6)
 
     p = make_pad(axes=(0.0, -0.66))     # measured: up is negative on axis 1
-    ny = p.read()[1]
-    check("axis1=-0.66 (up) -> ny=+0.66", abs(ny - 0.66) < 1e-6, f"ny={ny}")
+    check("axis1=-0.66 (up) -> ny=+0.66", abs(p.read().ny - 0.66) < 1e-6)
 
     p = make_pad(axes=(0.0, 0.66))      # down is positive on the raw axis
-    ny = p.read()[1]
-    check("axis1=+0.66 (down) -> ny=-0.66", abs(ny + 0.66) < 1e-6, f"ny={ny}")
+    check("axis1=+0.66 (down) -> ny=-0.66", abs(p.read().ny + 0.66) < 1e-6)
 
     # Do not hardcode values here: the base signs above are expected to change
     # with hardware, and a hardcoded test goes red every time they do. Only
     # assert that the override inverts.
-    base_nx, base_ny, _, _, _ = make_pad(axes=(0.5, 0.5)).read()
-    inv_nx, inv_ny, _, _, _ = make_pad(axes=(0.5, 0.5), inv_x=True, inv_y=True).read()
+    base = make_pad(axes=(0.5, 0.5)).read()
+    inv = make_pad(axes=(0.5, 0.5), inv_x=True, inv_y=True).read()
     check("--invert-x / --invert-y negate the result (regardless of base sign)",
-          abs(inv_nx + base_nx) < 1e-6 and abs(inv_ny + base_ny) < 1e-6
-          and abs(base_nx) > 0.1,
-          f"base nx={base_nx} ny={base_ny} / inverted nx={inv_nx} ny={inv_ny}")
+          abs(inv.nx + base.nx) < 1e-6 and abs(inv.ny + base.ny) < 1e-6
+          and abs(base.nx) > 0.1,
+          f"base nx={base.nx} ny={base.ny} / inverted nx={inv.nx} ny={inv.ny}")
 
-    p = make_pad(axes=(1.5, -1.5))
-    nx, ny, _, _, _ = p.read()
+    state = make_pad(axes=(1.5, -1.5)).read()
     check("readings beyond +-1 are clamped (some controllers overshoot)",
-          nx <= 1.0 and ny <= 1.0, f"nx={nx} ny={ny}")
+          state.nx <= 1.0 and state.ny <= 1.0,
+          f"nx={state.nx} ny={state.ny}")
+
+    # ---- 2b. Triggers -> vertical throttle ----
+    print("\n[2b] triggers -> Z, where RT is up and LT is down")
+    check("a resting trigger reads 0",
+          trigger_amount(TRIGGER_REST) == 0.0,
+          f"{trigger_amount(TRIGGER_REST)}")
+    check("a fully pressed trigger reads 1",
+          abs(trigger_amount(TRIGGER_FULL) - 1.0) < 1e-6,
+          f"{trigger_amount(TRIGGER_FULL)}")
+    check("halfway reads about 0.5",
+          abs(trigger_amount(0.0) - 0.5) < 0.05,
+          f"{trigger_amount(0.0)}")
+    check("a reading past the end is clamped, not extrapolated",
+          trigger_amount(TRIGGER_FULL + 0.5) == 1.0)
+
+    check("RT alone gives +Z", vertical_throttle(TRIGGER_REST, TRIGGER_FULL) > 0.9)
+    check("LT alone gives -Z", vertical_throttle(TRIGGER_FULL, TRIGGER_REST) < -0.9)
+    check("neither gives 0", vertical_throttle(TRIGGER_REST, TRIGGER_REST) == 0.0)
+    check("both at once stops rather than picking a direction",
+          vertical_throttle(TRIGGER_FULL, TRIGGER_FULL) == 0.0)
+    check("both slightly pressed also stops",
+          vertical_throttle(0.0, 0.0) == 0.0)
+    check("Z is bounded to -1..+1",
+          -1.0 <= vertical_throttle(TRIGGER_REST, TRIGGER_FULL + 9) <= 1.0)
 
     # ---- 3. Safety key ----
     print("\n[3] safety key")
     p = make_pad(axes=(0.0, 0.0))
-    check("not pressed -> en=False", p.read()[2] is False)
+    check("not pressed -> en=False", p.read().deadman is False)
     p = make_pad(axes=(0.0, 0.0), buttons=(DEFAULT_DEADMAN_BUTTON,))
-    check(f"button {DEFAULT_DEADMAN_BUTTON} down -> en=True", p.read()[2] is True)
+    check(f"button {DEFAULT_DEADMAN_BUTTON} down -> en=True", p.read().deadman is True)
     p = make_pad(axes=(0.0, 0.0), buttons=(3,), deadman=99)
     check("out-of-range key number does not crash, reads as not pressed",
-          p.read()[2] is False)
+          p.read().deadman is False)
 
     p = make_pad(axes=(0.5, -0.5))
     p.deadman_button = None          # the --show-input path
     try:
-        nx, ny, en, _, _ = p.read()
-        check("unset safety key (None) does not crash", abs(nx - 0.5) < 1e-6 and en is False,
-              f"nx={nx} en={en}")
+        state = p.read()
+        check("unset safety key (None) does not crash",
+              abs(state.nx - 0.5) < 1e-6 and state.deadman is False,
+              f"nx={state.nx} en={state.deadman}")
     except Exception as exc:
         check("unset safety key (None) does not crash", False, f"{type(exc).__name__}: {exc}")
 
@@ -786,23 +886,30 @@ def selftest() -> int:
     # ---- 4. Command format ----
     print("\n[4] command format")
     check("neutral, locked",
-          cmd_line(0.0, 0.0, False) == "CMD nx=+0.000 ny=+0.000 en=0\n",
-          repr(cmd_line(0.0, 0.0, False)))
-    check("forward-right, unlocked",
-          cmd_line(0.42, -0.17, True) == "CMD nx=+0.420 ny=-0.170 en=1\n",
-          repr(cmd_line(0.42, -0.17, True)))
+          cmd_line(0.0, 0.0, 0.0, False) == "CMD nx=+0.000 ny=+0.000 vz=+0.000 en=0\n",
+          repr(cmd_line(0.0, 0.0, 0.0, False)))
+    check("forward-right and descending, unlocked",
+          cmd_line(0.42, -0.17, -0.5, True)
+          == "CMD nx=+0.420 ny=-0.170 vz=-0.500 en=1\n",
+          repr(cmd_line(0.42, -0.17, -0.5, True)))
 
     # ---- 5. Telemetry parsing ----
     print("\n[5] telemetry parsing")
     t = Telemetry()
     check("a well-formed JOY line parses",
-          parse_joy("JOY X=+0.42 Y=-0.17 MAG=0.45 OUT READY=1 L=1718 R=1282 "
-                    "TL=1718 TR=1282 EN=1 LINK=1", t) and t.seen)
+          parse_joy("JOY X=+0.42 Y=-0.17 Z=-0.50 MAG=0.45 OUT READY=1 "
+                    "L=1718 R=1282 V=1000 TL=1718 TR=1282 EN=1 LINK=1", t) and t.seen)
     check("fields land where they should",
-          abs(t.x - 0.42) < 1e-6 and t.l_us == 1718 and t.en and t.link and not t.in_dead)
-    check("an unknown extra field does not break it",
-          parse_joy("JOY X=0 Y=0 MAG=0 DEAD READY=1 L=1500 R=1500 EN=0 LINK=0 FUTURE=7",
+          abs(t.x - 0.42) < 1e-6 and abs(t.z + 0.5) < 1e-6
+          and t.l_us == 1718 and t.v_us == 1000
+          and t.en and t.link and not t.in_dead,
+          f"x={t.x} z={t.z} l={t.l_us} v={t.v_us}")
+    check("a board without the vertical thruster still parses",
+          parse_joy("JOY X=0 Y=0 MAG=0 DEAD READY=1 L=1500 R=1500 EN=0 LINK=0",
                     Telemetry()))
+    check("an unknown extra field does not break it",
+          parse_joy("JOY X=0 Y=0 Z=0 MAG=0 DEAD READY=1 L=1500 R=1500 V=1500 "
+                    "EN=0 LINK=0 FUTURE=7", Telemetry()))
     check("a non-JOY line is rejected", not parse_joy("ST state=READY wifi=IDLE", Telemetry()))
 
     # ---- 6. Port picking ----

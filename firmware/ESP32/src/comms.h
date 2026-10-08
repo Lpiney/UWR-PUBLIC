@@ -11,9 +11,9 @@
 //  bandwidth this project does not need.
 //
 //  ---- laptop -> ROV ----
-//      CMD nx=<f> ny=<f> en=<0|1>
-//                        Drive. nx/ny are -1..+1, where +x is right and +y is
-//                        forward. en=1 means the safety key is unlocked; en=0
+//      CMD nx=<f> ny=<f> [vz=<f>] en=<0|1>
+//                        Drive. nx/ny/vz are -1..+1: +x right, +y forward,
+//                        +z up. en=1 means the safety key is unlocked; en=0
 //                        forces neutral. Sent every 20 ms; silence for
 //                        LINK_TIMEOUT_MS also forces neutral.
 //      P <k> <v>         Write a parameter (persisted in NVS)
@@ -51,6 +51,7 @@ namespace comms {
 struct Command {
   float    nx         = 0.0f;   // -1..+1, +x is right
   float    ny         = 0.0f;   // -1..+1, +y is forward
+  float    vz         = 0.0f;   // -1..+1, +z is up (RT up, LT down)
   bool     enable     = false;  // safety key state, sent by the host
   uint32_t lastCmdMs  = 0;      // arrival time of the last *valid* line
   uint32_t lines      = 0;      // accepted lines (diagnostics)
@@ -92,14 +93,17 @@ inline void data(const String &m)  { emit("DATA", m); }
 //  split eventually cuts in the wrong place. Unknown keys are skipped, so
 //  adding fields later cannot break an older parser.
 //
-//  A line missing any of the three fields is rejected outright. Better to
-//  hold position than to drive the motors from half a command.
+//  A line missing nx, ny or en is rejected outright. Better to hold position
+//  than to drive the motors from half a command.
+//
+//  vz is optional and defaults to 0, so a host that predates the vertical
+//  thruster keeps working - it simply leaves it at neutral.
 // ---------------------------------------------------------------------------
 inline bool parseCmd(const char *s) {
   if (strncmp(s, "CMD", 3) != 0) return false;
 
   Command &c = cmd();
-  float nx = c.nx, ny = c.ny;
+  float nx = c.nx, ny = c.ny, vz = c.vz;
   bool  en = c.enable;
   bool  gotNx = false, gotNy = false, gotEn = false;
 
@@ -114,6 +118,7 @@ inline bool parseCmd(const char *s) {
 
     if      (klen == 2 && !strncmp(p, "nx", 2)) { nx = strtof(val, nullptr); gotNx = true; }
     else if (klen == 2 && !strncmp(p, "ny", 2)) { ny = strtof(val, nullptr); gotNy = true; }
+    else if (klen == 2 && !strncmp(p, "vz", 2)) { vz = strtof(val, nullptr); }
     else if (klen == 2 && !strncmp(p, "en", 2)) { en = (atoi(val) != 0);      gotEn = true; }
 
     p = val;
@@ -124,6 +129,7 @@ inline bool parseCmd(const char *s) {
 
   c.nx        = constrain(nx, -1.0f, 1.0f);
   c.ny        = constrain(ny, -1.0f, 1.0f);
+  c.vz        = constrain(vz, -1.0f, 1.0f);
   c.enable    = en;
   c.lastCmdMs = millis();
   c.lines++;
@@ -227,6 +233,7 @@ inline String statusLine() {
   return String("state=") + thrusters::stateName() +
          " outL="  + String(t.outL) +
          " outR="  + String(t.outR) +
+         " outV="  + String(t.outV) +
          " enc="   + String(cmd().enable ? 1 : 0) +
          " link="  + String(linkOk(millis()) ? 1 : 0) +
          " wifi="  + mission1::wifiStateName() +
@@ -253,12 +260,13 @@ inline void tickTelemetry() {
     // Built into a buffer and sent through emit() rather than Serial.printf:
     // emit() writes to both serial ports, and a board whose only connection is
     // the UART bridge would otherwise never see a single telemetry line.
-    char buf[192];
+    char buf[224];
     snprintf(buf, sizeof(buf),
-             "X=%+.3f Y=%+.3f MAG=%.3f %s READY=%d L=%d R=%d TL=%d TR=%d EN=%d LINK=%d",
-             c.nx, c.ny, mag, (mag < PULSE_DEADZONE) ? "DEAD" : "OUT",
+             "X=%+.3f Y=%+.3f Z=%+.3f MAG=%.3f %s READY=%d "
+             "L=%d R=%d V=%d TL=%d TR=%d EN=%d LINK=%d",
+             c.nx, c.ny, c.vz, mag, (mag < PULSE_DEADZONE) ? "DEAD" : "OUT",
              t.ready ? 1 : 0,
-             (int)lroundf(t.outL), (int)lroundf(t.outR),
+             (int)lroundf(t.outL), (int)lroundf(t.outR), (int)lroundf(t.outV),
              t.targetL, t.targetR,
              c.enable ? 1 : 0, linkOk(now) ? 1 : 0);
     emit("JOY", String(buf));

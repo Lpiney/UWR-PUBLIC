@@ -23,10 +23,13 @@ struct State {
   bool     ready      = false;  // boot window elapsed (also reported upstream)
   int      targetL    = ESC_US_NEUTRAL;   // mixer output, before slew
   int      targetR    = ESC_US_NEUTRAL;
+  int      targetV    = ESC_US_NEUTRAL;   // vertical, straight from the triggers
   float    outL       = ESC_US_NEUTRAL;   // after slew; float keeps it smooth
   float    outR       = ESC_US_NEUTRAL;
+  float    outV       = ESC_US_NEUTRAL;
   int      writtenL   = -1;     // last value actually pushed to LEDC
   int      writtenR   = -1;
+  int      writtenV   = -1;
   int      neutral    = ESC_US_NEUTRAL;   // mirrored from params
 };
 
@@ -38,10 +41,11 @@ inline uint32_t usToDuty(int us) {
 }
 
 // Only touch LEDC when the value actually changed.
-inline void writePWM(int l, int r) {
+inline void writePWM(int l, int r, int v) {
   State &s = st();
   if (l != s.writtenL) { ledcWrite(ESC_CH_L, usToDuty(l)); s.writtenL = l; }
   if (r != s.writtenR) { ledcWrite(ESC_CH_R, usToDuty(r)); s.writtenR = r; }
+  if (v != s.writtenV) { ledcWrite(ESC_CH_V, usToDuty(v)); s.writtenV = v; }
 }
 
 // Configure LEDC and put neutral on the wire *immediately*.
@@ -56,14 +60,16 @@ inline void begin() {
 
   ledcSetup(ESC_CH_L, ESC_PWM_FREQ_HZ, ESC_PWM_RES_BITS);
   ledcSetup(ESC_CH_R, ESC_PWM_FREQ_HZ, ESC_PWM_RES_BITS);
+  ledcSetup(ESC_CH_V, ESC_PWM_FREQ_HZ, ESC_PWM_RES_BITS);
   ledcAttachPin(PIN_ESC_L, ESC_CH_L);
   ledcAttachPin(PIN_ESC_R, ESC_CH_R);
+  ledcAttachPin(PIN_ESC_V, ESC_CH_V);
 
-  s.targetL = s.targetR = s.neutral;
-  s.outL = s.outR = (float)s.neutral;
+  s.targetL = s.targetR = s.targetV = s.neutral;
+  s.outL = s.outR = s.outV = (float)s.neutral;
   s.readyAt = millis() + BOOT_IGNORE_MS;
   s.ready = false;
-  writePWM(s.neutral, s.neutral);
+  writePWM(s.neutral, s.neutral, s.neutral);
 }
 
 // Re-read neutral from params (call after a P or R command).
@@ -74,16 +80,17 @@ inline void syncParams() {
 
 // Mixer output -> targets. Trims are applied here, then constrained, so a bad
 // trim can never push the pulse width outside the ESC's travel.
-inline void setTarget(int l, int r) {
+inline void setTarget(int l, int r, int v) {
   State &s = st();
   s.targetL = constrain(l + params::d().trimL, ESC_US_MIN, ESC_US_MAX);
   s.targetR = constrain(r + params::d().trimR, ESC_US_MIN, ESC_US_MAX);
+  s.targetV = constrain(v + params::d().trimV, ESC_US_MIN, ESC_US_MAX);
 }
 
 // Force neutral: no link, safety key locked, or the stick is centred.
 inline void setNeutral() {
   State &s = st();
-  s.targetL = s.targetR = s.neutral;
+  s.targetL = s.targetR = s.targetV = s.neutral;
 }
 
 inline const char* stateName() {
@@ -101,21 +108,25 @@ inline void update(float dtMs) {
 
   // Through the boot window the input is ignored entirely.
   if (!s.ready) {
-    s.targetL = s.targetR = s.neutral;
+    s.targetL = s.targetR = s.targetV = s.neutral;
   }
 
   // Slew limit: move at most SLEW_US_PER_MS per millisecond toward the target.
   const float maxStep = SLEW_US_PER_MS * (dtMs > 0.0f ? dtMs : 1.0f);
   float dL = (float)s.targetL - s.outL;
   float dR = (float)s.targetR - s.outR;
+  float dV = (float)s.targetV - s.outV;
   if (dL >  maxStep) dL =  maxStep;
   if (dL < -maxStep) dL = -maxStep;
   if (dR >  maxStep) dR =  maxStep;
   if (dR < -maxStep) dR = -maxStep;
+  if (dV >  maxStep) dV =  maxStep;
+  if (dV < -maxStep) dV = -maxStep;
   s.outL += dL;
   s.outR += dR;
+  s.outV += dV;
 
-  writePWM((int)lroundf(s.outL), (int)lroundf(s.outR));
+  writePWM((int)lroundf(s.outL), (int)lroundf(s.outR), (int)lroundf(s.outV));
 }
 
 }  // namespace thrusters

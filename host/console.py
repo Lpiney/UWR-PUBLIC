@@ -110,6 +110,21 @@ RED = (80, 80, 230)
 
 PULSE_MIN = 1000
 PULSE_MAX = 2000
+PULSE_NEUTRAL = 1500
+
+
+def vertical_label(us: int) -> str:
+    """UP / HOLD / DOWN for the vertical thruster.
+
+    One row rather than two: the thruster has a single pulse width, so UP and
+    DOWN are the two ends of the same number. A deadband around neutral keeps
+    the label from flickering while the value settles.
+    """
+    if us > PULSE_NEUTRAL + 2:
+        return "UP"
+    if us < PULSE_NEUTRAL - 2:
+        return "DOWN"
+    return "HOLD"
 
 
 # ===========================================================================
@@ -897,9 +912,9 @@ class Console:
             return
 
         fs, pad, gap = 0.5, 9, 6
-        rows = [("L", telem.l_us), ("R", telem.r_us)]
-        label = f"L {PULSE_MAX:4d}"
-        label_w, label_h = _text_wh(label, fs)
+        rows = [("L", telem.l_us), ("R", telem.r_us),
+                (vertical_label(telem.v_us), telem.v_us)]
+        label_w, label_h = _text_wh(f"{'DOWN':<5}{PULSE_MAX:4d}", fs)
         line_h = label_h + gap
         bar_w, bar_h = 180, label_h - 6
 
@@ -909,7 +924,7 @@ class Console:
 
         ty = y + pad
         for name, us in rows:
-            cv2.putText(img, f"{name} {us:4d}", (x + pad, ty + label_h - gap),
+            cv2.putText(img, f"{name:<5}{us:4d}", (x + pad, ty + label_h - gap),
                         FONT, fs, WHITE, THICKNESS, cv2.LINE_AA)
             bx = x + pad + label_w + 12
             by = ty + 3
@@ -1016,11 +1031,13 @@ class Console:
                 self.pad.pump()
 
                 if self.pad.connected:
-                    nx, ny, key_down, _, pressed = self.pad.read()
+                    state = self.pad.read()
+                    nx, ny, vz = state.nx, state.ny, state.vz
+                    key_down, pressed = state.deadman, state.pressed
                     self._handle_buttons(pressed, prev_buttons)
                     prev_buttons = pressed
                 else:
-                    nx, ny, key_down = 0.0, 0.0, False
+                    nx, ny, vz, key_down = 0.0, 0.0, 0.0, False
                     prev_buttons = []
 
                 if not self.use_deadman:
@@ -1035,7 +1052,7 @@ class Console:
                     t_last = now
                     if self.board is not None:
                         try:
-                            self.board.send(nx, ny, en)
+                            self.board.send(nx, ny, vz, en)
                             sent += 1
                         except Exception as exc:
                             print(f"serial write failed: {exc}")
