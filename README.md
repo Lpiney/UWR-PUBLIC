@@ -29,6 +29,7 @@ Xbox 手柄 ──USB──> 筆電 ──序列埠──> ESP32 ──PWM──
 | `host/vision/` | 辨識模組：`apriltag.py`（Mission 2.1）、`color.py`（Mission 5） |
 | `host/pad_bridge.py` | 手柄 → 序列埠的橋接層。操作台用它，也可以單獨跑 |
 | `docs/GUIDE.md` | **操作指南**：照順序做的完整流程 |
+| `docs/OPERATION-MANUAL.md` | **比賽操作手冊**：每個任務對照比賽手冊的要求與打法 |
 | `docs/` | 其餘參考資料 |
 
 ## 硬體接線
