@@ -168,24 +168,19 @@ def calibrate(frame, box):
 
 
 class ColorDetector:
-    """What the console drives: the calibrated bands, plus the colour order
-    the mission is judged in."""
+    """What the console drives: the calibrated bands.
+
+    Mission 5 also has an activation order, which the referee announces and
+    changes between attempts. The console does not carry it: the order a
+    previous version showed was hardcoded to R-B-Y and displayed as if it
+    were the referee's, which is worse than showing nothing, and there is no
+    way to enter the real one from here. The operator keeps it.
+    """
 
     def __init__(self, config=CONFIG_PATH):
         self.ranges = load_config(config)
         self.config_path = Path(config)
-        # Mission 5 asks for the colours in a fixed order; the operator
-        # advances with N after visually confirming a ball dropped.
-        self.order = ["R", "B", "Y"]
-        self.step = 0
         self.show_masks = False
-
-    @property
-    def required(self):
-        return self.order[self.step] if self.step < len(self.order) else None
-
-    def advance(self):
-        self.step = min(len(self.order), self.step + 1)
 
     def apply_calibration(self, color, bands):
         self.ranges[color] = bands

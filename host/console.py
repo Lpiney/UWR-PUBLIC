@@ -704,7 +704,6 @@ class TaskColor(Task):
                     thickness, cv2.LINE_AA)
 
     def info(self, ctx):
-        c = ctx.color
         lines = [("MODE  Colour", AMBER)]
 
         if not ctx.mouse.known:
@@ -712,8 +711,6 @@ class TaskColor(Task):
         else:
             lines.append(("READY - point at a pole, press RB", GREY))
 
-        lines.append((f"order    {'-'.join(c.order)}   next {c.required or 'done'}",
-                      WHITE))
         if self.answer is None:
             lines.append(("answer   --", GREY))
         else:
@@ -724,7 +721,6 @@ class TaskColor(Task):
     def keys(self, ctx):
         return [("C", "capture"),
                 ("1 2 3", "calibrate R/Y/B"),
-                ("N", "next colour"),
                 ("R", "clear answer"),
                 ("D", "colour masks")]
 
@@ -732,10 +728,6 @@ class TaskColor(Task):
         if key == "c":
             return self.capture(ctx)
         if key == "r":
-            self.answer = None
-            return True
-        if key == "n":
-            ctx.color.advance()
             self.answer = None
             return True
         if key in ("1", "2", "3"):

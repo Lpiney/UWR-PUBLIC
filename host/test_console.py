@@ -154,6 +154,15 @@ class ConsoleTaskTests(TestCase):
         self.con.task.capture(self.con)
         self.assertEqual(self.con.task.answer, "R")
 
+    def test_the_panel_does_not_claim_to_know_the_activation_order(self):
+        """The order is announced on the day and can change between attempts.
+        A hardcoded R-B-Y used to be shown as if it were the referee's, which
+        is worse than showing nothing: the operator follows it and loses the
+        sequence bonus without ever doubting the screen."""
+        self.con._switch(TaskColor)
+        text = " ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertNotIn("order", text.lower())
+
     def test_r_clears_the_answer(self):
         self.con._switch(TaskColor)
         self.point_at(320, 225)
@@ -329,7 +338,7 @@ class ConsoleTaskTests(TestCase):
         self.assertEqual([k for k, _ in TaskAprilTag().keys(self.con)],
                          ["L", "M", "C", "R"])
         self.assertEqual([k for k, _ in TaskColor().keys(self.con)],
-                         ["C", "1 2 3", "N", "R", "D"])
+                         ["C", "1 2 3", "R", "D"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
 
