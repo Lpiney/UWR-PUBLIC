@@ -197,6 +197,21 @@ class ConsoleTaskTests(TestCase):
         self.con.task.on_key("m", self.con)
         self.assertEqual(self.con.task.mode, "smallest")
 
+    def test_the_panel_names_the_key_that_selects_the_logic(self):
+        """The bracketed letter reads as "press this key", so it has to be the
+        key. It used to be the first letter of the word instead, which is L
+        for largest but S for smallest - and smallest is selected with M."""
+        self.con._switch(TaskAprilTag)
+        for key, mode, shown in (("l", "largest", "(L)"),
+                                 ("m", "smallest", "(M)")):
+            with self.subTest(mode=mode):
+                self.con.task.on_key(key, self.con)
+                logic = [t for t, _ in self.con.task.info(self.con)
+                         if t.startswith("logic")]
+                self.assertEqual(len(logic), 1)
+                self.assertEqual(self.con.task.mode, mode)
+                self.assertIn(shown, logic[0])
+
     def test_the_result_follows_the_chosen_logic(self):
         self.con._switch(TaskAprilTag)
         self.con.task.ids = {3, 7, 11}

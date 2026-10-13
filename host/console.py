@@ -580,8 +580,11 @@ class TaskAprilTag(Task):
             lines.append(("press L = largest, M = smallest", WHITE))
             return lines
 
-        lines.append((f"logic    {'largest' if self.mode == 'largest' else 'smallest'}"
-                      f"  ({self.mode[0].upper()})", WHITE))
+        # Name the key, not the first letter of the word. "smallest" starts
+        # with S, but the key that selects it is M, and a bracketed letter in
+        # this panel reads as the key to press.
+        lines.append((f"logic    {self.mode}"
+                      f"  ({'L' if self.mode == 'largest' else 'M'})", WHITE))
 
         if self.capturing:
             left = max(0.0, TAG_CAPTURE_SECONDS - (ctx.now - self.started))
