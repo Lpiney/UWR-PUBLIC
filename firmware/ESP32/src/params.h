@@ -125,6 +125,18 @@ inline bool known(const String &key) {
          key == "pollMs" || key == "wifiRetryMs";
 }
 
+// The organisers hand out the tower's IP address, not a URL, so what gets
+// typed on the day is "192.168.4.1". HTTPClient refuses any string without a
+// scheme - it looks for the colon and gives up - so the only sensible reading
+// is to add http://. This fills in a missing prefix; it never redirects the
+// request somewhere else, which is why it is not the same as guessing.
+inline String withScheme(const String &url) {
+  String u = url;
+  u.trim();
+  if (!u.length() || u.indexOf("://") >= 0) return u;
+  return "http://" + u;
+}
+
 inline bool set(const String &key, const String &val) {
   Guard g;
   Data &p = d();
@@ -133,7 +145,7 @@ inline bool set(const String &key, const String &val) {
   } else if (key == "pass") {
     p.pass = val;            nvs().putString("pass", p.pass);
   } else if (key == "url") {
-    p.url = val;             nvs().putString("url", p.url);
+    p.url = withScheme(val); nvs().putString("url", p.url);
   } else if (key == "neutral") {
     p.neutral = val.toInt(); nvs().putInt("neutral", p.neutral);
   } else if (key == "trimL") {

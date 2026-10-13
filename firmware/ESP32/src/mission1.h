@@ -41,7 +41,6 @@ inline volatile bool& reqConnect() { static volatile bool v = true;  return v; }
 inline volatile bool& reqFetch()   { static volatile bool v = false; return v; }
 inline volatile int&  wifiState()  { static volatile int  v = 0;     return v; }
 inline volatile int&  rssi()       { static volatile int  v = 0;     return v; }
-inline bool&          hasData()    { static bool v = false; return v; }
 
 // 0 = idle / 1 = connecting / 2 = connected / 3 = lost
 inline const char* wifiStateName() {
@@ -116,7 +115,6 @@ inline void fetchOnce(const String &url) {
     // If the server returned a whole page, keep only the head of it so the
     // sentence meant for the referee is not pushed off the end.
     if (body.length() > 180) body = body.substring(0, 180) + " ...";
-    hasData() = true;
     post("DATA", body);
   } else if (code > 0) {
     post("EV", "http: status " + String(code));
