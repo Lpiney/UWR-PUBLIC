@@ -99,7 +99,7 @@ THICKNESS = 1
 
 WHITE = (255, 255, 255)
 POINTER_COLOR = (255, 255, 0)    # cyan: distinct from every panel and pole
-GREY = (150, 150, 150)
+GREY = (205, 205, 205)      # de-emphasised, but still readable on a panel
 DARK = (60, 60, 60)
 GREEN = (90, 220, 90)
 AMBER = (60, 200, 240)
@@ -338,16 +338,25 @@ def _panel_box(img, x, y, w, h, anchor):
     y = max(0, min(y, img.shape[0] - h))
     roi = img[y:y + h, x:x + w]
     if roi.size:
-        cv2.addWeighted(np.zeros_like(roi), 0.42, roi, 0.58, 0, roi)
-        cv2.rectangle(img, (x, y), (x + w, y + h), (90, 90, 90), 1)
+        # Shade hard rather than lightly. The panels sit over whatever the
+        # camera is pointed at, and the pool surface is bright: at 0.58 the
+        # backdrop of a white tile came out at 148, which is the same value as
+        # GREY - every grey row of text disappeared into it. At 0.32 the
+        # backdrop is around 82 whatever is behind it, so light text reads
+        # from the surface to the bottom of the pool.
+        cv2.addWeighted(np.zeros_like(roi), 0.68, roi, 0.32, 0, roi)
+        cv2.rectangle(img, (x, y), (x + w, y + h), (110, 110, 110), 1)
     return x, y
 
 
-def draw_panel(img, x, y, lines, anchor="tl", fs=0.5, pad=9, gap=6):
+def draw_panel(img, x, y, lines, anchor="tl", fs=0.5, pad=9, gap=6, title=None):
     """Draw a translucent panel of text lines anchored to a corner.
 
     anchor says which corner (x, y) refers to: "tl", "tr", "bl" or "br".
     Each entry in lines is either a string or a (string, colour) pair.
+    title draws a heading on its own rule above the lines. The two hint panels
+    need it: one lists controller buttons and one lists keyboard keys, and
+    letters like C and R mean different things depending on which is which.
     """
     items = [(ln, WHITE) if isinstance(ln, str) else ln for ln in lines]
     if not items:
@@ -355,12 +364,27 @@ def draw_panel(img, x, y, lines, anchor="tl", fs=0.5, pad=9, gap=6):
 
     text_w = max((_text_wh(t, fs)[0] for t, _ in items), default=0)
     line_h = max((_text_wh(t, fs)[1] for t, _ in items), default=0) + gap
-    w = text_w + pad * 2
-    h = line_h * len(items) + pad * 2
+
+    title_fs = fs * 0.85
+    title_w, title_h = 0, 0
+    if title:
+        title_w, th = _text_wh(title, title_fs)
+        title_h = th + gap + 4          # the heading plus its rule
+
+    w = max(text_w, title_w) + pad * 2
+    h = line_h * len(items) + title_h + pad * 2
 
     x, y = _panel_box(img, x, y, w, h, anchor)
 
     ty = y + pad
+    if title:
+        _, th = _text_wh(title, title_fs)
+        cv2.putText(img, title, (x + pad, ty + th - gap), FONT, title_fs,
+                    WHITE, THICKNESS, cv2.LINE_AA)
+        ry = ty + th + 2
+        cv2.line(img, (x + pad, ry), (x + w - pad, ry), GREY, 1)
+        ty += title_h
+
     for text, color in items:
         _, th = _text_wh(text, fs)
         cv2.putText(img, text, (x + pad, ty + th - gap), FONT, fs, color,
@@ -747,10 +771,13 @@ class TaskWifi(Task):
                  (f"ip    {m['ip']}", WHITE),
                  (f"http  {m['http']}", WHITE)]
         if m["data"]:
+            # The whole string is shown, wrapped rather than cut: this is the
+            # line the referee reads, and a truncation would be silent. The
+            # firmware already caps it at 180 characters.
             body = m["data"]
-            lines.append((f"DATA  {body[:44]}", GREEN))
-            if len(body) > 44:
-                lines.append((f"      {body[44:88]}", GREEN))
+            for i in range(0, len(body), 44):
+                prefix = "DATA  " if i == 0 else "      "
+                lines.append((f"{prefix}{body[i:i + 44]}", GREEN))
         else:
             lines.append(("DATA  (nothing received yet)", GREY))
         return lines
@@ -898,7 +925,12 @@ class Console:
 
     def _draw_hints(self, img):
         """Two panels in the bottom-right corner: the controller map, and just
-        above it the keyboard shortcuts for whatever task is active."""
+        above it the keyboard shortcuts for whatever task is active.
+
+        Both are titled, because the operator has to know which device each
+        letter belongs to: C is a button on one and a key on the other, and R
+        appears only on the keyboard.
+        """
         lines = []
         for task_cls in TASKS:
             active = type(self.task) is task_cls
@@ -917,11 +949,11 @@ class Console:
                       f"[{'LOCKED' if locked else 'UNLOCK'}]",
                       GREY if locked else GREEN))
         _, py, _, _ = draw_panel(img, img.shape[1] - 16, img.shape[0] - 16,
-                                 lines, anchor="br", fs=0.5)
+                                 lines, anchor="br", fs=0.5, title="PAD")
 
         keys = [("Q Esc", "quit"), ("S", "save png")] + list(self.task.keys(self))
         draw_panel(img, img.shape[1] - 16, py - 6, self._key_lines(keys),
-                   anchor="br", fs=0.44, pad=7)
+                   anchor="br", fs=0.44, pad=7, title="KEYBOARD")
 
     @staticmethod
     def _key_lines(keys):
