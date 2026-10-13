@@ -130,21 +130,14 @@ pip install pygame pyserial
 # ① 先認軸和按鍵（只讀手柄，不碰序列埠）：推搖桿、按各鍵，看哪個編號在動
 python3 host/pad_bridge.py --show-input
 
-# ② 正常跑。啟動時按一下你想當安全鍵的按鍵（它自己學編號），
-#    然後預設是鎖住的：按一下解鎖，再按一下鎖上
+# ② 正常跑。安全鍵是 Y，預設鎖住：按一下解鎖，再按一下鎖上
 python3 host/pad_bridge.py
-
-# ③ 第一次除錯不想管鎖
-python3 host/pad_bridge.py --no-deadman
-
-# ④ 不接板子，只測手柄
-python3 host/pad_bridge.py --no-serial
 ```
 
 不接手柄也能驗證程式邏輯：
 
 ```bash
-python3 host/pad_bridge.py --selftest
+cd host && python3 -m unittest test_pad_bridge -v
 ```
 
 ### 操作台（OSD）
@@ -205,12 +198,10 @@ python3 host/console.py
 按鍵編號用 SDL 標準對應，第一次用真手柄跑之前先
 `python3 host/pad_bridge.py --show-input` 核對一下。
 
-沒有硬體也能跑或檢查版面：
+不接硬體也能驗證辨識流程：
 
 ```bash
-python3 host/console.py --synthetic      # 沒有攝影機，用測試圖樣
-python3 host/console.py --no-serial      # 沒有板子
-python3 host/console.py --render-preview .preview   # 輸出各狀態的版面 PNG
+cd host && python3 -m unittest test_console vision.test_apriltag vision.test_color -v
 ```
 
 ### 在另一台電腦上（Windows）

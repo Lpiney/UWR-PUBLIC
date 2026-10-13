@@ -9,8 +9,9 @@ Data path:
 
 Every 20 ms this script sends one line:
 
-    CMD nx=+0.42 ny=-0.17 en=1
+    CMD nx=+0.42 ny=-0.17 vz=+0.50 en=1
       nx/ny   left stick, -1..+1 (+x is right, +y is forward)
+      vz      triggers, -1..+1 (RT is up, LT is down, both together is 0)
       en      1 = unlocked (motors may drive), 0 = locked -> board forces neutral
 
 The safety key is a toggle (locked by default): press once to unlock, press
@@ -29,12 +30,6 @@ Usage
     # Normal run. The safety key is Y and starts locked; press it once to
     # unlock, again to lock. Loss of the controller re-locks automatically.
     python3 pad_bridge.py
-
-    # First debugging session, no lock wanted
-    python3 pad_bridge.py --no-deadman
-
-    # No board attached, controller only
-    python3 pad_bridge.py --no-serial
 """
 
 from __future__ import annotations
@@ -384,8 +379,8 @@ def pick_port(ports: list):
     """Pick the board out of a list of ports, or return None.
 
     Accepts either (device, description) pairs from find_ports() or bare
-    device-name strings, so it stays a pure function and the self test can
-    feed it realistic lists directly.
+    device-name strings, so it stays a pure function: no machine's port list
+    has to be present to reason about which one would be chosen.
 
     Auto-detection exists because every platform's port list is full of
     entries that are not the board - Bluetooth devices and system debug ports
@@ -560,18 +555,14 @@ def show_input(pad: Pad) -> int:
         time.sleep(0.05)
 
 
-def draw_status(pad, board, nx, ny, vz, en, sent, use_deadman, latched=True):
+def draw_status(pad, board, nx, ny, vz, en, sent, latched=True):
     pad_txt = "pad ok" if pad.connected else "pad LOST (neutral)"
-    if not use_deadman:
-        lock_txt = "disabled (always live)"
-    elif not pad.connected:
+    if not pad.connected:
         lock_txt = "LOCKED (pad lost)"
     else:
         lock_txt = "UNLOCKED: may drive" if en else "LOCKED: stick does nothing"
 
-    if board is None:
-        board_txt = "no board"
-    elif board.telem is None:
+    if board.telem is None:
         board_txt = "waiting for telemetry (the board resets once on open)"
     else:
         t = board.telem
@@ -586,15 +577,12 @@ def draw_status(pad, board, nx, ny, vz, en, sent, use_deadman, latched=True):
     print(f"\r{line[:170]:170s}", end="", flush=True)
 
 
-def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
+def run_bridge(pad: Pad, board, period: float) -> int:
     print("Bridge mode: controller -> serial -> board. Ctrl-C to quit.")
     latch = Latch(locked=True)
-    if use_deadman:
-        print(f"safety key = button {pad.deadman_button} (toggle): currently LOCKED, "
-              f"press once to unlock, again to lock.")
-        print("Losing the controller re-locks it automatically.")
-    if board is None:
-        print("--no-serial: no board, controller readings only.")
+    print(f"safety key = button {pad.deadman_button} (toggle): currently LOCKED, "
+          f"press once to unlock, again to lock.")
+    print("Losing the controller re-locks it automatically.")
     time.sleep(0.4)
 
     sent = 0
@@ -615,9 +603,7 @@ def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
                 # Pad lost: everything to neutral, now.
                 nx, ny, vz, key_down = 0.0, 0.0, 0.0, False
 
-            if not use_deadman:
-                en = True
-            elif not pad.connected:
+            if not pad.connected:
                 latch.force_lock()                      # safety first
                 en = False
             else:
@@ -630,28 +616,26 @@ def run_bridge(pad: Pad, board, use_deadman: bool, period: float) -> int:
             # so the board sees a steady 50 Hz.
             if now - t_last >= period:
                 t_last = now
-                if board is not None:
-                    try:
-                        board.send(nx, ny, vz, en)
-                        sent += 1
-                    except Exception as exc:
-                        print(f"\nserial write failed: {exc}")
-                        return 2
+                try:
+                    board.send(nx, ny, vz, en)
+                    sent += 1
+                except Exception as exc:
+                    print(f"\nserial write failed: {exc}")
+                    return 2
 
-            if board is not None:
-                board.poll()
-                # Four seconds with no telemetry at all: say why instead of
-                # leaving the operator to wait.
-                if board.telem is None and not warned and now - t_start > 4.0:
-                    warned = True
-                    print("\n\n" + diagnose_no_telemetry(board.port))
-                    print("(the script keeps running; restart it after fixing the port.)")
+            board.poll()
+            # Four seconds with no telemetry at all: say why instead of
+            # leaving the operator to wait.
+            if board.telem is None and not warned and now - t_start > 4.0:
+                warned = True
+                print("\n\n" + diagnose_no_telemetry(board.port))
+                print("(the script keeps running; restart it after fixing the port.)")
 
             # Sending and drawing are separate concerns: 50 Hz out, 10 Hz on
             # screen is plenty and far easier to read.
             if now - t_draw >= 0.1:
                 t_draw = now
-                draw_status(pad, board, nx, ny, vz, en, sent, use_deadman,
+                draw_status(pad, board, nx, ny, vz, en, sent,
                             latched=latch.locked)
             time.sleep(0.02)
     except KeyboardInterrupt:
@@ -672,309 +656,6 @@ def missing_deps():
 
 
 # ===========================================================================
-#  Self test (no controller, no pygame, no serial)
-# ===========================================================================
-
-class _FakeEvent:
-    def __init__(self, type_, **kw):
-        self.type = type_
-        self.__dict__.update(kw)
-
-
-class _FakeJoystick:
-    """Fake controller: axis 0 = stick X, axis 1 = stick Y, button 5 = safety."""
-
-    def __init__(self, idx=0, axes=(0.0, 0.0), buttons=()):
-        self.idx = idx
-        self.axes = list(axes) + [0.0] * 6
-        self.buttons = [1 if i in buttons else 0 for i in range(11)]
-
-    def init(self):
-        pass
-
-    def get_name(self):
-        return f"FakePad{self.idx}"
-
-    def get_numaxes(self):
-        return len(self.axes)
-
-    def get_axis(self, i):
-        return self.axes[i]
-
-    def get_numbuttons(self):
-        return len(self.buttons)
-
-    def get_button(self, i):
-        return self.buttons[i]
-
-
-class _FakePygame:
-    JOYDEVICEADDED = 1536
-    JOYDEVICEREMOVED = 1537
-
-    def __init__(self, events=(), joystick=None):
-        self._events = list(events)
-        self._js = joystick
-        self.joystick = _FakePygame._JoystickModule(joystick)
-
-    class _JoystickModule:
-        def __init__(self, js):
-            self._js = js
-
-        def Joystick(self, idx):          # noqa: N802 (pygame's interface name)
-            if self._js is None:
-                raise RuntimeError("no controller")
-            return self._js
-
-    @property
-    def event(self):
-        return self
-
-    def get(self):
-        ev, self._events = self._events, []
-        return ev
-
-
-def selftest() -> int:
-    ok = True
-
-    def check(name, cond, detail=""):
-        nonlocal ok
-        print(f"  {'ok  ' if cond else 'FAIL'} {name}"
-              + (f"   {detail}" if not cond and detail else ""))
-        ok = ok and cond
-
-    def make_pad(axes=(0.0, 0.0), buttons=(), **kw):
-        p = Pad(kw.get("axis_x", 0), kw.get("axis_y", 1),
-                kw.get("deadman", DEFAULT_DEADMAN_BUTTON),
-                kw.get("inv_x", False), kw.get("inv_y", False))
-        p._pygame = _FakePygame()          # never initialise the real pygame here
-        p.js = _FakeJoystick(axes=axes, buttons=buttons)
-        p.name = "FakePad"
-        return p
-
-    print("pad_bridge self test (no controller / pygame / serial needed)")
-
-    # ---- 1. Hot-plug events ----
-    print("\n[1] hot-plug events (this used to crash)")
-    probe = _FakeEvent(_FakePygame.JOYDEVICEADDED, device_index=0)
-    check("(precondition) such an event really has no .device attribute",
-          not hasattr(probe, "device"))
-    for attr in ("device_index", "device"):
-        p = make_pad()
-        p.js = None
-        p._pygame = _FakePygame(events=[_FakeEvent(_FakePygame.JOYDEVICEADDED, **{attr: 0})],
-                                joystick=_FakeJoystick(0))
-        try:
-            p.pump()
-            check(f"event carrying only {attr} still attaches", p.js is not None)
-        except Exception as exc:
-            check(f"event carrying only {attr} still attaches", False,
-                  f"{type(exc).__name__}: {exc}")
-
-    p = make_pad()
-    p.js = None
-    p._pygame = _FakePygame(events=[_FakeEvent(_FakePygame.JOYDEVICEADDED, device_index=None)],
-                            joystick=_FakeJoystick(0))
-    try:
-        p.pump()
-        check("event carrying neither attribute does not crash", True)
-    except Exception as exc:
-        check("event carrying neither attribute does not crash", False,
-              f"{type(exc).__name__}: {exc}")
-
-    p = make_pad()
-    p._pygame = _FakePygame(events=[_FakeEvent(_FakePygame.JOYDEVICEREMOVED, device_index=0)],
-                            joystick=_FakeJoystick(0))
-    p.pump()
-    check("unplugging marks it disconnected", p.js is None and not p.connected)
-
-    p = make_pad()
-    p.js = _FakeJoystick(0)
-    p._pygame = _FakePygame(events=[_FakeEvent(999, whatever=1)])
-    try:
-        p.pump()
-        check("unknown event types are ignored", True)
-    except Exception as exc:
-        check("unknown event types are ignored", False, f"{type(exc).__name__}: {exc}")
-
-    # ---- 2. Axis convention: right = +nx, up = +ny ----
-    print("\n[2] axis convention - up gives positive ny, right gives positive nx")
-    p = make_pad(axes=(0.83, 0.0))
-    check("axis0=+0.83 (right) -> nx=+0.83", abs(p.read().nx - 0.83) < 1e-6)
-
-    p = make_pad(axes=(0.0, -0.66))     # measured: up is negative on axis 1
-    check("axis1=-0.66 (up) -> ny=+0.66", abs(p.read().ny - 0.66) < 1e-6)
-
-    p = make_pad(axes=(0.0, 0.66))      # down is positive on the raw axis
-    check("axis1=+0.66 (down) -> ny=-0.66", abs(p.read().ny + 0.66) < 1e-6)
-
-    # Do not hardcode values here: the base signs above are expected to change
-    # with hardware, and a hardcoded test goes red every time they do. Only
-    # assert that the override inverts.
-    base = make_pad(axes=(0.5, 0.5)).read()
-    inv = make_pad(axes=(0.5, 0.5), inv_x=True, inv_y=True).read()
-    check("--invert-x / --invert-y negate the result (regardless of base sign)",
-          abs(inv.nx + base.nx) < 1e-6 and abs(inv.ny + base.ny) < 1e-6
-          and abs(base.nx) > 0.1,
-          f"base nx={base.nx} ny={base.ny} / inverted nx={inv.nx} ny={inv.ny}")
-
-    state = make_pad(axes=(1.5, -1.5)).read()
-    check("readings beyond +-1 are clamped (some controllers overshoot)",
-          state.nx <= 1.0 and state.ny <= 1.0,
-          f"nx={state.nx} ny={state.ny}")
-
-    # ---- 2b. Triggers -> vertical throttle ----
-    print("\n[2b] triggers -> Z, where RT is up and LT is down")
-    check("a resting trigger reads 0",
-          trigger_amount(TRIGGER_REST) == 0.0,
-          f"{trigger_amount(TRIGGER_REST)}")
-    check("a fully pressed trigger reads 1",
-          abs(trigger_amount(TRIGGER_FULL) - 1.0) < 1e-6,
-          f"{trigger_amount(TRIGGER_FULL)}")
-    check("halfway reads about 0.5",
-          abs(trigger_amount(0.0) - 0.5) < 0.05,
-          f"{trigger_amount(0.0)}")
-    check("a reading past the end is clamped, not extrapolated",
-          trigger_amount(TRIGGER_FULL + 0.5) == 1.0)
-
-    check("RT alone gives +Z", vertical_throttle(TRIGGER_REST, TRIGGER_FULL) > 0.9)
-    check("LT alone gives -Z", vertical_throttle(TRIGGER_FULL, TRIGGER_REST) < -0.9)
-    check("neither gives 0", vertical_throttle(TRIGGER_REST, TRIGGER_REST) == 0.0)
-    check("both at once stops rather than picking a direction",
-          vertical_throttle(TRIGGER_FULL, TRIGGER_FULL) == 0.0)
-    check("both slightly pressed also stops",
-          vertical_throttle(0.0, 0.0) == 0.0)
-    check("Z is bounded to -1..+1",
-          -1.0 <= vertical_throttle(TRIGGER_REST, TRIGGER_FULL + 9) <= 1.0)
-
-    # ---- 3. Safety key ----
-    print("\n[3] safety key")
-    p = make_pad(axes=(0.0, 0.0))
-    check("not pressed -> en=False", p.read().deadman is False)
-    p = make_pad(axes=(0.0, 0.0), buttons=(DEFAULT_DEADMAN_BUTTON,))
-    check(f"button {DEFAULT_DEADMAN_BUTTON} down -> en=True", p.read().deadman is True)
-    p = make_pad(axes=(0.0, 0.0), buttons=(3,), deadman=99)
-    check("out-of-range key number does not crash, reads as not pressed",
-          p.read().deadman is False)
-
-    p = make_pad(axes=(0.5, -0.5))
-    p.deadman_button = None          # the --show-input path
-    try:
-        state = p.read()
-        check("unset safety key (None) does not crash",
-              abs(state.nx - 0.5) < 1e-6 and state.deadman is False,
-              f"nx={state.nx} en={state.deadman}")
-    except Exception as exc:
-        check("unset safety key (None) does not crash", False, f"{type(exc).__name__}: {exc}")
-
-    print("\n[3b] toggle safety key (starts locked / one press flips / pad loss re-locks)")
-    la = Latch()
-    check("starts locked -> no drive", la.update(False) is False)
-    check("one press -> unlocked", la.update(True) is True)
-    check("holding it down does not oscillate", la.update(True) is True and not la.changed)
-    check("released -> still unlocked (toggle, not hold)", la.update(False) is True)
-    check("press again -> locked again", la.update(True) is False)
-    check("still locked after release", la.update(False) is False)
-
-    la2 = Latch()
-    la2.update(True)
-    la2.force_lock()
-    check("pad loss re-locks", la2.locked and la2.update(False) is False)
-    check("force_lock when already locked reports no event", Latch().update(False) is False)
-
-    # ---- 4. Command format ----
-    print("\n[4] command format")
-    check("neutral, locked",
-          cmd_line(0.0, 0.0, 0.0, False) == "CMD nx=+0.000 ny=+0.000 vz=+0.000 en=0\n",
-          repr(cmd_line(0.0, 0.0, 0.0, False)))
-    check("forward-right and descending, unlocked",
-          cmd_line(0.42, -0.17, -0.5, True)
-          == "CMD nx=+0.420 ny=-0.170 vz=-0.500 en=1\n",
-          repr(cmd_line(0.42, -0.17, -0.5, True)))
-
-    # ---- 5. Telemetry parsing ----
-    print("\n[5] telemetry parsing")
-    t = Telemetry()
-    check("a well-formed JOY line parses",
-          parse_joy("JOY X=+0.42 Y=-0.17 Z=-0.50 MAG=0.45 OUT READY=1 "
-                    "L=1718 R=1282 V=1000 TL=1718 TR=1282 EN=1 LINK=1", t) and t.seen)
-    check("fields land where they should",
-          abs(t.x - 0.42) < 1e-6 and abs(t.z + 0.5) < 1e-6
-          and t.l_us == 1718 and t.v_us == 1000
-          and t.en and t.link and not t.in_dead,
-          f"x={t.x} z={t.z} l={t.l_us} v={t.v_us}")
-    check("a board without the vertical thruster still parses",
-          parse_joy("JOY X=0 Y=0 MAG=0 DEAD READY=1 L=1500 R=1500 EN=0 LINK=0",
-                    Telemetry()))
-    check("an unknown extra field does not break it",
-          parse_joy("JOY X=0 Y=0 Z=0 MAG=0 DEAD READY=1 L=1500 R=1500 V=1500 "
-                    "EN=0 LINK=0 FUTURE=7", Telemetry()))
-    check("a non-JOY line is rejected", not parse_joy("ST state=READY wifi=IDLE", Telemetry()))
-
-    # ---- 6. Port picking ----
-    print("\n[6] port picking")
-    mac_list = ["/dev/cu.debug-console", "/dev/cu.iFLYBUDSPro2",
-                "/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.usbserial-A5069RR4"]
-    chosen, _ = pick_port(mac_list)
-    check("picks the board out of a real macOS list",
-          chosen == "/dev/cu.usbserial-A5069RR4", f"chose {chosen}")
-
-    chosen, _ = pick_port(["/dev/cu.debug-console", "/dev/cu.Bluetooth-Incoming-Port"])
-    check("with only system/Bluetooth ports it refuses to guess", chosen is None)
-
-    chosen, _ = pick_port(["/dev/cu.usbserial-A", "/dev/cu.usbserial-B"])
-    check("two identical-looking candidates -> no guess", chosen is None)
-
-    chosen, _ = pick_port(["/dev/ttyS0"])
-    check("a single candidate wins even if the name looks odd", chosen == "/dev/ttyS0")
-
-    two_ports = ["/dev/cu.debug-console", "/dev/cu.usbmodem101", "/dev/cu.usbserial-A5069RR4"]
-    chosen, _ = pick_port(two_ports)
-    check("bridge chip preferred over the native USB port",
-          chosen == "/dev/cu.usbserial-A5069RR4", f"chose {chosen}")
-
-    # Windows: the device is just COMx, so the chip only shows up in the
-    # description. These are the strings pyserial actually reports there.
-    chosen, _ = pick_port([("COM1", "Communications Port"),
-                           ("COM5", "USB Serial Port"),
-                           ("COM6", "USB Serial Device")])
-    check("Windows: FTDI bridge picked over the motherboard port and the "
-          "ESP32's own USB port", chosen == "COM5", f"chose {chosen}")
-
-    chosen, _ = pick_port([("COM3", "Bluetooth Serial Port")])
-    check("Windows: a lone Bluetooth port is not the board", chosen is None,
-          f"chose {chosen}")
-
-    chosen, _ = pick_port([("COM7", "Silicon Labs CP210x USB to UART Bridge")])
-    check("Windows: a CP210x bridge is recognised", chosen == "COM7",
-          f"chose {chosen}")
-
-    chosen, _ = pick_port([("COM4", "USB-SERIAL CH340 (COM4)")])
-    check("Windows: a CH340 bridge is recognised", chosen == "COM4",
-          f"chose {chosen}")
-
-    chosen, _ = pick_port([("COM2", "USB Serial Device")])
-    check("Windows: the ESP32's own USB port alone is still usable",
-          chosen == "COM2", f"chose {chosen}")
-
-    check("silent port produces an actionable message",
-          len(diagnose_no_telemetry("/dev/cu.usbserial-A5069RR4")) > 20)
-
-    # ---- 7. Button labels ----
-    print("\n[7] button labels")
-    check("SDL numbers map to the expected names",
-          btn_name(0) == "A" and btn_name(1) == "B" and btn_name(2) == "X"
-          and btn_name(3) == "Y" and btn_name(5) == "RB")
-    check("an unknown number is shown as-is, not guessed",
-          btn_name(42) == "btn42")
-    check("the safety key defaults to Y", DEFAULT_DEADMAN_BUTTON == 3)
-
-    print(f"\n{'self test passed' if ok else 'self test FAILED'}")
-    return 0 if ok else 1
-
-
-# ===========================================================================
 #  Entry point
 # ===========================================================================
 
@@ -985,10 +666,6 @@ def main() -> int:
     p.add_argument("--port", help="serial device (auto-detected if omitted)")
     p.add_argument("--show-input", action="store_true",
                    help="read the controller only, print axis/button numbers")
-    p.add_argument("--no-deadman", action="store_true",
-                   help="no safety key required (first debugging only, risky)")
-    p.add_argument("--no-serial", action="store_true",
-                   help="no board, controller readings only")
     p.add_argument("--deadman", type=int, default=DEFAULT_DEADMAN_BUTTON,
                    help="safety key button number "
                         f"(default {DEFAULT_DEADMAN_BUTTON}, which is Y)")
@@ -996,12 +673,7 @@ def main() -> int:
     p.add_argument("--axis-y", type=int, default=DEFAULT_AXIS_Y, help="stick Y axis number")
     p.add_argument("--invert-x", action="store_true", help="negate X (if right reads negative)")
     p.add_argument("--invert-y", action="store_true", help="negate Y (if up reads negative)")
-    p.add_argument("--selftest", action="store_true",
-                   help="no controller, no serial: test this script's logic only")
     args = p.parse_args()
-
-    if args.selftest:
-        return selftest()
 
     try:
         import pygame  # noqa: F401
@@ -1019,51 +691,43 @@ def main() -> int:
     if args.show_input:
         return show_input(pad)
 
-    if args.no_deadman:
-        print("--no-deadman: the motors are live without pressing anything.")
-    else:
-        pad.deadman_button = (DEFAULT_DEADMAN_BUTTON if args.deadman is None
-                              else args.deadman)
-        print(f"safety key = {btn_name(pad.deadman_button)} "
-              f"(button {pad.deadman_button}). Starts locked.")
-
-    board = None
-    if not args.no_serial:
-        try:
-            import serial  # noqa: F401
-        except ImportError:
-            missing_deps()
-            return 2
-        port = args.port
-        if not port:
-            chosen, cands = pick_port(find_ports())
-            if chosen:
-                port = chosen
-                print(f"serial: auto-selected {port}"
-                      + (f" (from {len(cands)} candidates)" if len(cands) > 1 else ""))
-            elif not cands:
-                print("No serial ports found. Is the board plugged in? "
-                      "Use --no-serial to test the controller alone.")
-                return 2
-            else:
-                print("Several ports could be the board; pick one with --port:")
-                for x in cands:
-                    print("   ", x)
-                return 2
-        board = Board(port)
-        try:
-            board.open()
-        except Exception as exc:
-            print(f"cannot open {port}: {exc}")
-            print("(held by another program? close the serial monitor first)")
-            return 2
-        print(f"serial: {port} @ 115200")
+    pad.deadman_button = args.deadman
+    print(f"safety key = {btn_name(pad.deadman_button)} "
+          f"(button {pad.deadman_button}). Starts locked.")
 
     try:
-        return run_bridge(pad, board, not args.no_deadman, 1.0 / CMD_HZ)
+        import serial  # noqa: F401
+    except ImportError:
+        missing_deps()
+        return 2
+    port = args.port
+    if not port:
+        chosen, cands = pick_port(find_ports())
+        if chosen:
+            port = chosen
+            print(f"serial: auto-selected {port}"
+                  + (f" (from {len(cands)} candidates)" if len(cands) > 1 else ""))
+        elif not cands:
+            print("No serial ports found. Is the board plugged in?")
+            return 2
+        else:
+            print("Several ports could be the board; pick one with --port:")
+            for x in cands:
+                print("   ", x)
+            return 2
+    board = Board(port)
+    try:
+        board.open()
+    except Exception as exc:
+        print(f"cannot open {port}: {exc}")
+        print("(held by another program? close the serial monitor first)")
+        return 2
+    print(f"serial: {port} @ 115200")
+
+    try:
+        return run_bridge(pad, board, 1.0 / CMD_HZ)
     finally:
-        if board is not None:
-            board.close()
+        board.close()
 
 
 if __name__ == "__main__":

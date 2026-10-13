@@ -13,9 +13,10 @@ __pycache__/
 *.py[cod]
 
 # console.py runtime state
-.preview/
 host/snapshots/
 host/local-config.json
 
 # macOS
 .DS_Store
+.vscode/settings.json
+.gitignore

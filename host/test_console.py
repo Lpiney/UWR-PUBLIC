@@ -9,13 +9,56 @@ happens on RB. That is easy to break by accident when adding a task.
 import time
 from unittest import TestCase
 
-import cv2
-
-from console import (BTN_APRILTAG, BTN_CAPTURE, CAM_HEIGHT, CAM_WIDTH, Console,
-                     Task, TaskAprilTag, TaskColor, Camera, Pad, vertical_label)
+from console import (BTN_APRILTAG, BTN_CAPTURE, Console, Pad, Task,
+                     TaskAprilTag, TaskColor, vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.test_apriltag import frame_with_tags
 from vision.test_color import scene as colour_scene
+
+
+# The console drives a camera and a serial link that a test must not open, so
+# both stand-ins live here rather than the console growing a way to run
+# without them.
+
+class FakeCamera:
+    """A camera that is always delivering frames."""
+
+    def __init__(self, frame=None):
+        self.lost = False
+        self.index = 0
+        self._frame = frame
+
+    @property
+    def ok(self):
+        return self._frame is not None
+
+    def read(self):
+        return self._frame
+
+    def release(self):
+        pass
+
+
+class FakeBoard:
+    """The serial link, recorded instead of transmitted."""
+
+    def __init__(self):
+        self.port = "FAKE"
+        self.telem = None
+        self.on_line = None
+        self.sent = []
+
+    def send(self, nx, ny, vz, en):
+        self.sent.append((nx, ny, vz, en))
+
+    def send_raw(self, text):
+        pass
+
+    def poll(self):
+        pass
+
+    def close(self):
+        pass
 
 
 def telemetry():
@@ -25,11 +68,10 @@ def telemetry():
     return t
 
 
-def make_console():
+def make_console(camera=None):
     pad = Pad(0, 1, DEFAULT_DEADMAN_BUTTON, False, False)
     pad.js = object()          # stands in for a connected controller
-    return Console(pad=pad, board=None, camera=Camera(synthetic=True),
-                   use_deadman=True)
+    return Console(pad=pad, board=FakeBoard(), camera=camera or FakeCamera())
 
 
 class ConsoleTaskTests(TestCase):
@@ -277,14 +319,7 @@ class ConsoleTaskTests(TestCase):
         self.assertEqual(Task().keys(self.con), [])
 
 
-class CameraTests(TestCase):
-
-    def test_the_synthetic_camera_always_reports_frames(self):
-        camera = Camera(synthetic=True)
-        self.assertTrue(camera.ok)
-        frame = camera.read()
-        self.assertEqual(frame.shape[:2], (CAM_HEIGHT, CAM_WIDTH))
-        camera.release()
+class LostCameraTests(TestCase):
 
     def test_a_lost_camera_is_announced_rather_than_left_black(self):
         """A black picture with no explanation is the worst failure mode: the
@@ -295,16 +330,13 @@ class CameraTests(TestCase):
         image = con.render(telemetry(), True, frame=frame_with_tags(7))
         self.assertEqual(image.shape[2], 3)
 
-    def test_a_camera_that_never_opened_is_not_ok(self):
-        """Startup must fail loudly rather than open a window that stays
-        black - the operator would have no idea why."""
-        # Index far past anything a machine would present.
-        camera = Camera(index=99)
-        try:
-            self.assertFalse(camera.ok)
-            self.assertIsNone(camera.read())
-        finally:
-            camera.release()
+    def test_a_camera_that_has_not_delivered_yet_still_renders(self):
+        """Startup happens before the first frame arrives. That must draw the
+        OSD over a blank picture, not raise."""
+        con = make_console(camera=FakeCamera())
+        self.assertFalse(con.camera.ok)
+        image = con.render(telemetry(), True)
+        self.assertEqual(image.shape[2], 3)
 
 
 if __name__ == "__main__":

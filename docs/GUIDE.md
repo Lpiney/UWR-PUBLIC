@@ -66,10 +66,11 @@ python3 -m pip install -r host/requirements.txt
 **驗證**
 
 ```bash
-python3 host/pad_bridge.py --selftest
+cd host && python3 -m unittest test_pad_bridge
 ```
 
-看到 `self test passed` 就對了。這一步不需要手柄、不需要板子。
+看到 `OK` 就對了。這一步不需要手柄、不需要板子、不需要攝影機——
+所有檢查都跑在假的控制器上。
 
 ---
 
@@ -254,11 +255,10 @@ AprilTag 取兩幀而不是一幀，是因為單幀被水波晃糊就整個認�
 > 框選 ROI 或校準時會彈出選取視窗，那幾秒鐘驅動迴圈會暫停，板子的斷流保護
 > 會把馬達送回中立。這是安全的方向——你在框框的時候本來就沒在操縱。
 
-### 沒有硬體也能看畫面
+### 沒有硬體也能驗證辨識流程
 
 ```bash
-python3 host/console.py --synthetic    # 沒有攝影機
-python3 host/console.py --no-serial    # 沒有板子
+cd host && python3 -m unittest test_console vision.test_apriltag vision.test_color
 ```
 
 ### 攝影機
@@ -363,13 +363,14 @@ P wifiRetryMs 30000
 - 轉向方向與電調行程還沒在真船上驗證過
 - 只有一個 Tag 在畫面裡測過；多個 Tag 同時出現的實景還沒試
 
-### 驗證程式還在的話
+### 驗證程式
 
 ```bash
 cd host
-python3 -m unittest test_console vision.test_apriltag vision.test_color -v
+python3 -m unittest test_console test_pad_bridge vision.test_apriltag vision.test_color -v
 ```
 
-49 項，不需要攝影機、不需要板子、不需要手柄。涵蓋標籤偵測、多幀確認、游標取樣、
-HSV 校準與設定檔往返，以及兩條完整流程：「待命 → 選邏輯 → 按 RB 收 ID → 套用
-邏輯」和「游標指向 → 按 RB → 得到顏色」。
+102 項，不需要攝影機、不需要板子、不需要手柄——所有硬體都由測試檔自己的替身
+代替。涵蓋手柄軸向與扳機、安全鍵開關、序列埠挑選、JOY 解析、標籤偵測、多幀
+確認、游標取樣、HSV 校準與設定檔往返，以及兩條完整流程：「待命 → 選邏輯 →
+按 RB 收 ID → 套用邏輯」和「游標指向 → 按 RB → 得到顏色」。

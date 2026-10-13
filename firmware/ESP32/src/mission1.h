@@ -57,8 +57,9 @@ inline String localIp() {
   return (wifiState() == 2) ? WiFi.localIP().toString() : String("-");
 }
 
-// Gateway address. With a phone hotspot the gateway is the phone itself,
-// which makes it a handy target for bench testing.
+// Gateway address, reported in the status line. It says which network the
+// board actually landed on, which is the first thing to check when the tower
+// cannot be reached.
 inline String gatewayIp() {
   return (wifiState() == 2) ? WiFi.gatewayIP().toString() : String("-");
 }
@@ -170,13 +171,14 @@ inline void task(void *) {
     if (wifiState() == 2 && (reqFetch() || (int32_t)(millis() - nextPoll) >= 0)) {
       reqFetch() = false;
       nextPoll = millis() + p.pollMs;
-      // With no URL configured, fall back to the gateway root. That makes a
-      // phone hotspot with a server on the phone work with no configuration,
-      // while competition day uses the URL the organisers publish.
-      const String target = p.url.length()
-                          ? p.url
-                          : ("http://" + WiFi.gatewayIP().toString() + "/");
-      fetchOnce(target);
+      // The URL is published on the day and has no default worth guessing. Say
+      // so instead: a fetch that quietly goes somewhere else is worse than one
+      // that plainly did not happen.
+      if (p.url.length() == 0) {
+        post("EV", "url not set - send  P url http://...");
+      } else {
+        fetchOnce(p.url);
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(200));

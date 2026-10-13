@@ -34,10 +34,7 @@ task only decides what is displayed and what the camera is used for; the stick
 always drives.
 
 Usage
-    python3 console.py                  # full console
-    python3 console.py --no-serial      # no board: controller + camera only
-    python3 console.py --synthetic      # no camera: OSD on a test pattern
-    python3 console.py --render-preview # write layout PNGs and exit
+    python3 console.py
 """
 
 from __future__ import annotations
@@ -217,14 +214,11 @@ class Camera:
     LOST_AFTER = 15
     RESCAN_SECONDS = 1.0        # how often to retry while it is gone
 
-    def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT,
-                 synthetic=False):
-        self.synthetic = synthetic
+    def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT):
         self.index = index
         self.width = width
         self.height = height
         self.lost = False
-        self.frame_no = 0
 
         self._cap = None
         self._frame = None
@@ -232,9 +226,6 @@ class Camera:
         self._next_try = 0.0
         self._stop = threading.Event()
         self._thread = None
-
-        if synthetic:
-            return
 
         # At startup, look for a camera rather than giving up on the first
         # index: an index that is wrong is a guess, not a statement.
@@ -297,7 +288,6 @@ class Camera:
                 # A fresh array each read, so publishing it needs no lock:
                 # the worker never writes into a frame it has handed over.
                 self._frame = frame
-                self.frame_no += 1
                 self._misses = 0
                 self.lost = False
             else:
@@ -311,33 +301,12 @@ class Camera:
 
     def read(self):
         """The newest frame, or None. Never blocks on the device."""
-        if self.synthetic:
-            return self._synthetic()
         return self._frame
 
     @property
     def ok(self) -> bool:
-        """Usable right now: a synthetic pattern, or frames actually arriving."""
-        return self.synthetic or self._frame is not None
-
-    def _synthetic(self):
-        """A moving pattern, so the OSD is judged against a non-uniform image."""
-        self.frame_no += 1
-        w, h = CAM_WIDTH, CAM_HEIGHT
-        frame = np.zeros((h, w, 3), np.uint8)
-        x = np.linspace(0, 255, w, dtype=np.uint8)
-        frame[:, :, 0] = x[None, :]
-        frame[:, :, 1] = np.linspace(0, 255, h, dtype=np.uint8)[:, None]
-        cv2.putText(frame, "SYNTHETIC TEST PATTERN - no camera",
-                    (40, h // 2), FONT, 1.0, WHITE, 2)
-        t = self.frame_no * 4
-        cv2.circle(frame, (w // 2 + int(300 * np.cos(t / 40.0)),
-                           h // 2 + int(200 * np.sin(t / 40.0))), 40, WHITE, 2)
-        for i in range(0, w, 80):
-            cv2.line(frame, (i, 0), (i, h), DARK, 1)
-        for j in range(0, h, 80):
-            cv2.line(frame, (0, j), (w, j), DARK, 1)
-        return frame
+        """Frames are actually arriving."""
+        return self._frame is not None
 
     def release(self):
         self._stop.set()
@@ -796,14 +765,12 @@ TASKS = [TaskAprilTag, TaskColor, TaskWifi]
 
 class Console:
 
-    def __init__(self, pad, board, camera, use_deadman, show_help=True):
+    def __init__(self, pad, board, camera):
         self.pad = pad
         self.board = board
         self.camera = camera
-        self.use_deadman = use_deadman
         self.latch = Latch(locked=True)
         self.task = Task()                 # Manual
-        self.show_help = show_help
         self.frames = 0
         self.fps = 0.0
         self._t_fps = time.monotonic()
@@ -814,8 +781,7 @@ class Console:
         self.apriltag = AprilTagScanner(mode="largest", min_hits=3, expected=3)
         self.color = ColorDetector()
         self.mouse = Mouse()
-        if board is not None:
-            board.on_line = self._on_board_line
+        board.on_line = self._on_board_line
 
     # ---- board events -------------------------------------------------
     def _on_board_line(self, line: str):
@@ -870,14 +836,10 @@ class Console:
     def _draw_status(self, img, telem, link, en):
         if self.pad.connected:
             dot, link_txt = GREEN, "LINK"
-        elif self.board is None:
-            dot, link_txt = GREY, "NO BOARD"
         else:
             dot, link_txt = RED, "NO PAD"
 
-        if not self.use_deadman:
-            lock_txt, lock_col = "NO SAFETY KEY", AMBER
-        elif not self.pad.connected:
+        if not self.pad.connected:
             lock_txt, lock_col = "LOCKED (pad lost)", RED
         elif en:
             lock_txt, lock_col = "UNLOCK", GREEN
@@ -895,9 +857,9 @@ class Console:
         if self.camera.lost:
             _, py, _, ph = draw_panel(img, 16, py + ph + 4, [("NO CAMERA", RED)],
                                       anchor="tl", fs=0.5)
-        if self.show_help:
-            draw_panel(img, 16, py + ph + 4, [(f"{self.fps:4.1f} fps", GREY)],
-                       anchor="tl", fs=0.42, pad=6)
+        draw_panel(img, 16, py + ph + 4, [(f"{self.fps:4.1f} fps", GREY)],
+                   anchor="tl", fs=0.42, pad=6)
+
 
     def _draw_motors(self, img, telem):
         """Motor panel: one row per side, each with its own pulse-width gauge.
@@ -950,13 +912,10 @@ class Console:
                       GREEN if capturable else GREY))
 
         btn = self.pad.deadman_button
-        if not self.use_deadman:
-            lines.append((f"{'':<4} no safety key", GREY))
-        else:
-            locked = self.latch.locked
-            lines.append((f"{btn_name(btn):<4} Lock     "
-                          f"[{'LOCKED' if locked else 'UNLOCK'}]",
-                          GREY if locked else GREEN))
+        locked = self.latch.locked
+        lines.append((f"{btn_name(btn):<4} Lock     "
+                      f"[{'LOCKED' if locked else 'UNLOCK'}]",
+                      GREY if locked else GREEN))
         _, py, _, _ = draw_panel(img, img.shape[1] - 16, img.shape[0] - 16,
                                  lines, anchor="br", fs=0.5)
 
@@ -987,8 +946,8 @@ class Console:
             print(f"could not write {path}")
 
     def render(self, telem, en, frame=None):
-        """Produce one finished OSD frame. Used by the live loop and by
-        --render-preview, so the preview can never drift from the real thing."""
+        """Produce one finished OSD frame. `frame` overrides the camera, which
+        is how a caller can draw a specific picture without owning the device."""
         if frame is None:
             frame = self.camera.read()
         if frame is None:
@@ -1040,9 +999,7 @@ class Console:
                     nx, ny, vz, key_down = 0.0, 0.0, 0.0, False
                     prev_buttons = []
 
-                if not self.use_deadman:
-                    en = True
-                elif not self.pad.connected:
+                if not self.pad.connected:
                     self.latch.force_lock()
                     en = False
                 else:
@@ -1050,23 +1007,20 @@ class Console:
 
                 if now - t_last >= period:
                     t_last = now
-                    if self.board is not None:
-                        try:
-                            self.board.send(nx, ny, vz, en)
-                            sent += 1
-                        except Exception as exc:
-                            print(f"serial write failed: {exc}")
-                            return 2
+                    try:
+                        self.board.send(nx, ny, vz, en)
+                        sent += 1
+                    except Exception as exc:
+                        print(f"serial write failed: {exc}")
+                        return 2
 
-                telem = None
-                if self.board is not None:
-                    self.board.poll()
-                    telem = self.board.telem
-                    if telem is None and not warned and now - t_start > 4.0:
-                        warned = True
-                        print("No telemetry from the board yet. Check it is "
-                              "powered, flashed with the ROV firmware, and that "
-                              f"{self.board.port} is the right port.")
+                self.board.poll()
+                telem = self.board.telem
+                if telem is None and not warned and now - t_start > 4.0:
+                    warned = True
+                    print("No telemetry from the board yet. Check it is "
+                          "powered, flashed with the ROV firmware, and that "
+                          f"{self.board.port} is the right port.")
 
                 img = self.render(telem, en)
 
@@ -1103,67 +1057,6 @@ class Console:
 
 
 # ===========================================================================
-#  Headless layout preview
-# ===========================================================================
-
-def render_preview(outdir: pathlib.Path) -> int:
-    """Write one PNG per screen state, without a camera or a board.
-
-    Layout bugs are easy to introduce and hard to see, so this renders the
-    real draw path rather than a copy of it.
-    """
-    from pad_bridge import Telemetry
-
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    cam = Camera(synthetic=True)
-    pad = Pad(0, 1, DEFAULT_DEADMAN_BUTTON, False, False)
-    pad.js = object()      # stands in for a connected controller in preview only
-    console = Console(pad=pad, board=None, camera=cam, use_deadman=True)
-    console.fps = 30.0
-
-    telem = Telemetry()
-    telem.l_us, telem.r_us = 1718, 1282
-    telem.tl_us, telem.tr_us = 1718, 1282
-    telem.en, telem.link, telem.ready = True, True, True
-
-    states = [
-        ("manual_locked", None, False),
-        ("manual_unlocked", telem, True),
-        ("nolink", None, False),
-        ("apriltag", telem, True),
-        ("color", telem, True),
-        ("wifi", telem, True),
-    ]
-
-    for name, t, en in states:
-        if name == "aprilag":
-            console.task = TaskAprilTag()
-        elif name == "color":
-            console.task = TaskColor()
-        elif name == "wifi":
-            console.task = TaskWifi()
-            console.mission = {"wifi": "CONNECTED", "rssi": "-58", "ip":
-                               "192.168.4.7", "http": "200",
-                               "data": "MISSION1 DATA OK - underwater robotics"}
-        else:
-            console.task = Task()
-
-        # "nolink" shows what the operator sees if the controller drops out.
-        console.pad.js = None if name == "nolink" else object()
-        console.latch.locked = not en
-        console.latch._was_down = en        # let the toggle model match the state
-
-        img = console.render(t, en, frame=cam.read())
-        path = outdir / f"osd_{name}.png"
-        cv2.imwrite(str(path), img)
-        print(f"wrote {path}")
-
-    cam.release()
-    return 0
-
-
-# ===========================================================================
 #  Entry point
 # ===========================================================================
 
@@ -1171,9 +1064,6 @@ def main() -> int:
     p = argparse.ArgumentParser(
         description="UWR ROV operator console: controller, camera and a DJI-style OSD")
     p.add_argument("--port", help="serial device (auto-detected if omitted)")
-    p.add_argument("--no-serial", action="store_true", help="no board attached")
-    p.add_argument("--no-deadman", action="store_true",
-                   help="no safety key required (first debugging only, risky)")
     p.add_argument("--deadman", type=int, default=DEFAULT_DEADMAN_BUTTON,
                    help="safety key button number "
                         f"(default {DEFAULT_DEADMAN_BUTTON}, which is Y)")
@@ -1182,11 +1072,6 @@ def main() -> int:
                         "there; --list-cameras says which are)")
     p.add_argument("--list-cameras", action="store_true",
                    help="probe camera indices and exit")
-    p.add_argument("--synthetic", action="store_true",
-                   help="no camera: draw the OSD over a test pattern")
-    p.add_argument("--no-help", action="store_true", help="hide the fps readout")
-    p.add_argument("--render-preview", metavar="DIR",
-                   help="write layout PNGs to DIR and exit (no hardware needed)")
     p.add_argument("--axis-x", type=int, default=0, help="stick X axis number")
     p.add_argument("--axis-y", type=int, default=1, help="stick Y axis number")
     p.add_argument("--invert-x", action="store_true", help="negate X")
@@ -1195,8 +1080,6 @@ def main() -> int:
 
     if args.list_cameras:
         return list_cameras()
-    if args.render_preview:
-        return render_preview(pathlib.Path(args.render_preview))
 
     try:
         import pygame  # noqa: F401
@@ -1211,61 +1094,48 @@ def main() -> int:
         return 2
     print(f"controller: {pad.name}")
 
-    if args.no_deadman:
-        print("--no-deadman: the motors are live without pressing anything.")
-    else:
-        pad.deadman_button = (DEFAULT_DEADMAN_BUTTON if args.deadman is None
-                              else args.deadman)
-        print(f"safety key = {btn_name(pad.deadman_button)} "
-              f"(button {pad.deadman_button}). Starts locked.")
+    pad.deadman_button = args.deadman
+    print(f"safety key = {btn_name(pad.deadman_button)} "
+          f"(button {pad.deadman_button}). Starts locked.")
 
-    board = None
-    if not args.no_serial:
-        try:
-            import serial  # noqa: F401
-        except ImportError:
-            missing_deps()
+    try:
+        import serial  # noqa: F401
+    except ImportError:
+        missing_deps()
+        return 2
+    port = args.port
+    if not port:
+        chosen, cands = pick_port(find_ports())
+        if chosen:
+            port = chosen
+        elif not cands:
+            print("No serial ports found. Is the board plugged in?")
             return 2
-        port = args.port
-        if not port:
-            chosen, cands = pick_port(find_ports())
-            if chosen:
-                port = chosen
-            elif not cands:
-                print("No serial ports found. Is the board plugged in? "
-                      "Use --no-serial to run without it.")
-                return 2
-            else:
-                print("Several ports could be the board; pick one with --port:")
-                for x in cands:
-                    print("   ", x)
-                return 2
-        board = Board(port)
-        try:
-            board.open()
-        except Exception as exc:
-            print(f"cannot open {port}: {exc}")
+        else:
+            print("Several ports could be the board; pick one with --port:")
+            for x in cands:
+                print("   ", x)
             return 2
-        print(f"serial: {port} @ 115200")
+    board = Board(port)
+    try:
+        board.open()
+    except Exception as exc:
+        print(f"cannot open {port}: {exc}")
+        return 2
+    print(f"serial: {port} @ 115200")
 
-    camera = Camera(args.camera, synthetic=args.synthetic)
+    camera = Camera(args.camera)
     if not camera.ok:
         print(f"No camera delivered frames (tried from index {args.camera}). "
-              "Run --list-cameras to see what is attached, or --synthetic to "
-              "run without one.")
+              "Run --list-cameras to see what is attached.")
         return 2
-    if args.synthetic:
-        print("camera: synthetic test pattern")
-    else:
-        print(f"camera: index {camera.index}")
+    print(f"camera: index {camera.index}")
 
-    console = Console(pad, board, camera, not args.no_deadman,
-                      show_help=not args.no_help)
+    console = Console(pad, board, camera)
     try:
         return console.run()
     finally:
-        if board is not None:
-            board.close()
+        board.close()
 
 
 if __name__ == "__main__":
