@@ -109,16 +109,18 @@ cd firmware/ESP32
 ~/.platformio/penv/bin/pio run -t upload       # 燒錄
 ```
 
-有兩個建置環境，差別只在 Flash 分割表：
+只有一個建置環境，**兩種板子都是這條指令**：
 
-| 環境 | 對應板子 | 指令 |
-|---|---|---|
-| `uwr-rov`（預設） | **N8R8**（8 MB）——實驗室那塊 | `pio run -t upload` |
-| `uwr-rov-16mb` | **N16R8**（16 MB） | `pio run -e uwr-rov-16mb -t upload` |
+| 板子 | 指令 |
+|---|---|
+| **N8R8**（8 MB，實驗室那塊） | `pio run -t upload` |
+| **N16R8**（16 MB，你自己那塊） | 一樣 `pio run -t upload` |
 
-> 8 MB 的設定也能燒進 16 MB 的板子（只用到下面 8 MB），所以預設值是安全的。
-> **反過來不行**：16 MB 的分割表燒進 8 MB 的晶片會做出開不了機的映像。
-> 不確定手上是哪塊，就用預設值。
+分割表固定用 8 MB。它在 N16R8 上跑得起來，只是上面 8 MB 用不到——而韌體本體
+約 1 MB，那 8 MB 本來也就用不到。**反過來才會出事**：16 MB 的分割表燒進 8 MB
+的晶片會做出開不了機的映像。既然用不到就沒有理由留著那個選項。
+
+所以不必再確認手上是哪塊板子，也不會選錯。這是刻意的。
 
 ### 筆電端
 
@@ -253,7 +255,7 @@ python host\console.py --port COM5
 `pio` 通常自己找得到埠；找不到就明講：
 
 ```bash
-pio run -e uwr-rov-16mb -t upload --upload-port COM5
+pio run -t upload --upload-port COM5
 ```
 
 ## 序列埠協定

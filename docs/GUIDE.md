@@ -80,13 +80,12 @@ cd firmware/ESP32
 pio run -t upload
 ```
 
-| 板子 | 指令 |
-|---|---|
-| **N8R8**（8 MB，實驗室那塊） | `pio run -t upload` |
-| **N16R8**（16 MB） | `pio run -e uwr-rov-16mb -t upload` |
+**兩種板子都是這條指令**——N8R8（8 MB）和 N16R8（16 MB）都一樣，不用切換、
+不用先確認桌上放的是哪一塊。
 
-不確定就先用預設值——8 MB 的設定在 16 MB 的板子上也能跑，只是用不到上面一半。
-**反過來不行**，16 MB 的分割表燒進 8 MB 的晶片會做出開不了機的映像。
+分割表固定用 8 MB：它在 N16R8 上跑得起來，只是用不到上面一半（韌體本體約
+1 MB，那 8 MB 本來也空著）。**反過來才會出事**——16 MB 的分割表燒進 8 MB
+的晶片會做出開不了機的映像，所以那個選項沒有留著。
 
 埠認不出來就明講：`pio run -t upload --upload-port COM5`（Windows）或
 `--upload-port /dev/cu.usbserial-XXXX`（macOS）。
