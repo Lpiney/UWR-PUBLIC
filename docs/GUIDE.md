@@ -54,6 +54,10 @@ Python 用 python.org 的 3.11，安裝時勾「Add python.exe to PATH」。
 PlatformIO 用 VS Code 的擴充（「開啟資料夾」打開 `firmware\ESP32`），
 或用命令列 `python -m pip install platformio`。
 
+> **Windows 上要送指令給板子**（`P url …`、`G ssid` 那些），
+> 步驟、指令、以及怎麼認出正確的 COM 埠，見
+> [Windows：開序列埠監視器送指令](Operation-Manuals/Windows-Serial-Console.md)。
+
 **macOS / Linux**
 
 ```bash

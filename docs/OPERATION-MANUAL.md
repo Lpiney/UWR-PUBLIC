@@ -28,6 +28,8 @@
 
 1. 板子用 USB 線接上筆電
 2. 開序列埠監視器，鮑率 **115200**
+
+   （Windows 上怎麼找埠、怎麼開，見[這份](Operation-Manuals/Windows-Serial-Console.md)）
 3. 打這行，按 Enter：
 
    ```
