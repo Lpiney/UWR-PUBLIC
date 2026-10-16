@@ -104,20 +104,20 @@ GPIO19/20（原生 USB）、GPIO43/44（UART0）、GPIO0/3/45/46（strapping）�
 
 ### 韌體
 
-在 `firmware/ESP32/` 目錄下執行：
+在 repo 根目錄執行，`-d` 指出專案在哪：
 
 **macOS / Linux**
 
 ```bash
-~/.platformio/penv/bin/pio run                 # 編譯
-~/.platformio/penv/bin/pio run -t upload       # 燒錄
+~/.platformio/penv/bin/pio run -d firmware/ESP32                 # 編譯
+~/.platformio/penv/bin/pio run -d firmware/ESP32 -t upload       # 燒錄
 ```
 
 **Windows**
 
 ```powershell
-pio run
-pio run -t upload
+pio run -d firmware\ESP32
+pio run -d firmware\ESP32 -t upload
 ```
 
 Windows 上 `pio` 通常已經在 PATH 上（`python -m pip install platformio` 裝的）。
@@ -127,8 +127,8 @@ Windows 上 `pio` 通常已經在 PATH 上（`python -m pip install platformio` 
 
 | 板子 | 指令 |
 |---|---|
-| **N8R8**（8 MB，實驗室那塊） | `pio run -t upload` |
-| **N16R8**（16 MB，你自己那塊） | 一樣 `pio run -t upload` |
+| **N8R8**（8 MB，實驗室那塊） | `pio run -d firmware\ESP32 -t upload` |
+| **N16R8**（16 MB，你自己那塊） | 一樣 `pio run -d firmware\ESP32 -t upload` |
 
 分割表固定用 8 MB。它在 N16R8 上跑得起來，只是上面 8 MB 用不到——而韌體本體
 約 1 MB，那 8 MB 本來也就用不到。**反過來才會出事**：16 MB 的分割表燒進 8 MB
@@ -151,7 +151,7 @@ python3 host/pad_bridge.py
 不接手柄也能驗證程式邏輯：
 
 ```bash
-cd host && python3 -m unittest test_pad_bridge -v
+python3 -m unittest discover -s host -t host -v
 ```
 
 ### 操作台（OSD）
@@ -215,7 +215,7 @@ python3 host/console.py
 不接硬體也能驗證辨識流程：
 
 ```bash
-cd host && python3 -m unittest test_console vision.test_apriltag vision.test_color -v
+python3 -m unittest discover -s host -t host -v
 ```
 
 ### 在另一台電腦上（Windows）
@@ -259,8 +259,8 @@ python host\console.py --port COM5
 
 `pio` 通常自己找得到埠；找不到就明講：
 
-```bash
-pio run -t upload --upload-port COM5
+```powershell
+pio run -d firmware\ESP32 -t upload --upload-port COM5
 ```
 
 ## 序列埠協定

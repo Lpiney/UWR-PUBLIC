@@ -1,6 +1,6 @@
 # UWR 操作手冊
 
-比賽當天照著做。
+比賽當天照著做。**所有指令都在 repo 根目錄下執行**（`UWR-PUBLIC\`），不用切目錄。
 
 | 任務 | 分數 | |
 |---|---|---|
@@ -247,7 +247,7 @@ RESULT   7
 
 | | 在哪裡打 | 例子 |
 |---|---|---|
-| Shell 指令 | 終端機 | `pio run -t upload` |
+| Shell 指令 | 終端機 | `pio run -d firmware\ESP32 -t upload` |
 | **板子指令** | **序列埠監視器** | `P url …`、`G ssid` |
 
 要先在終端機把監視器**開起來**，然後才在裡面打板子指令。
@@ -281,8 +281,17 @@ COM5 | USB Serial Port (COM5)
 | 方法 | 怎麼做 |
 |---|---|
 | **A. VS Code PlatformIO**（推薦） | PlatformIO 圖示 → `PROJECT TASKS` → **`Monitor`**。自動找埠、自動 115200 |
-| **B. 命令列** | 在 `firmware\ESP32` 下：`pio device monitor --port COM5 --baud 115200` |
+| **B. 命令列** | `pio device monitor -d firmware\ESP32` |
 | **C. `pio` 被擋掉時** | `python -m serial.tools.miniterm COM5 115200` |
+
+`-d firmware\ESP32` 是告訴 `pio` 專案在哪。**不能省**——省掉的話它找不到
+`platformio.ini`，鮑率會變成預設的 **9600**，讀出來全是亂碼。
+
+埠抓錯了就明講：
+
+```powershell
+pio device monitor -d firmware\ESP32 --port COM5
+```
 
 ## 送指令
 
@@ -316,7 +325,7 @@ P url 192.168.4.1:8080
 1. **`&&` 不能用**——PowerShell 5.1 不支援。一次打一行。<br>
    `The token '&&' is not a valid statement separator in this version.`
 2. **`pio` 找不到就用 `python -m platformio`。**
-3. **不要重複 `cd`**——先看提示字元，已經在 `firmware\ESP32>` 就直接打指令。
+3. **`-d firmware\ESP32` 不能省**——省掉會變成 9600 鮑率，全是亂碼。
 
 ## 出問題時
 

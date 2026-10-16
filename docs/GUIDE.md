@@ -70,7 +70,7 @@ python3 -m pip install -r host/requirements.txt
 **驗證**
 
 ```bash
-cd host && python3 -m unittest test_pad_bridge
+python3 -m unittest discover -s host -t host
 ```
 
 看到 `OK` 就對了。這一步不需要手柄、不需要板子、不需要攝影機——
@@ -80,9 +80,10 @@ cd host && python3 -m unittest test_pad_bridge
 
 ## 2. 燒韌體
 
+在 repo 根目錄執行，`-d` 指出專案在哪：
+
 ```bash
-cd firmware/ESP32
-pio run -t upload
+pio run -d firmware/ESP32 -t upload
 ```
 
 **兩種板子都是這條指令**——N8R8（8 MB）和 N16R8（16 MB）都一樣，不用切換、
@@ -92,8 +93,8 @@ pio run -t upload
 1 MB，那 8 MB 本來也空著）。**反過來才會出事**——16 MB 的分割表燒進 8 MB
 的晶片會做出開不了機的映像，所以那個選項沒有留著。
 
-埠認不出來就明講：`pio run -t upload --upload-port COM5`（Windows）或
-`--upload-port /dev/cu.usbserial-XXXX`（macOS）。
+埠認不出來就明講：`pio run -d firmware\ESP32 -t upload --upload-port COM5`（Windows）
+或 `--upload-port /dev/cu.usbserial-XXXX`（macOS）。
 
 **驗證**：燒完打開序列埠監視器（115200），應該每 50 ms 刷一行 `JOY`。
 
@@ -265,7 +266,7 @@ AprilTag 取兩幀而不是一幀，是因為單幀被水波晃糊就整個認�
 ### 沒有硬體也能驗證辨識流程
 
 ```bash
-cd host && python3 -m unittest test_console vision.test_apriltag vision.test_color
+python3 -m unittest discover -s host -t host
 ```
 
 ### 攝影機
@@ -389,8 +390,7 @@ P wifiRetryMs 30000
 ### 驗證程式
 
 ```bash
-cd host
-python3 -m unittest test_console test_pad_bridge vision.test_apriltag vision.test_color -v
+python3 -m unittest discover -s host -t host -v
 ```
 
 102 項，不需要攝影機、不需要板子、不需要手柄——所有硬體都由測試檔自己的替身
