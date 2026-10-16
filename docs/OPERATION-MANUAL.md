@@ -51,8 +51,10 @@
 
 ### 二、開操作台
 
-```bash
-python3 host/console.py
+在 repo 根目錄下：
+
+```powershell
+python host\console.py
 ```
 
 等左上角出現**綠燈 ● LINK**。
@@ -250,9 +252,9 @@ RESULT   7
 
 要先在終端機把監視器**開起來**，然後才在裡面打板子指令。
 
-## 找出板子在哪個 COM 埠（Windows）
+## 找出板子在哪個 COM 埠
 
-```
+```powershell
 pio device list
 ```
 
@@ -309,11 +311,11 @@ P url 192.168.4.1:8080
 
 **`Ctrl+C`**，沒反應就 **`Ctrl+]`**。
 
-## Windows 上的三個坑
+## 三個坑
 
 1. **`&&` 不能用**——PowerShell 5.1 不支援。一次打一行。<br>
    `The token '&&' is not a valid statement separator in this version.`
-2. **`pio` 路徑不同**——Windows 就是 `pio`；找不到用 `python -m platformio`。
+2. **`pio` 找不到就用 `python -m platformio`。**
 3. **不要重複 `cd`**——先看提示字元，已經在 `firmware\ESP32>` 就直接打指令。
 
 ## 出問題時
