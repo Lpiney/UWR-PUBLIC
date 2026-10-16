@@ -29,29 +29,35 @@
 // ---------------------------------------------------------------------------
 //  Mixer: normalised stick position -> left and right pulse widths.
 //
-//      forward = ny            turn = nx
-//      left    = forward + dir * turn
-//      right   = forward - dir * turn
+//  MEASURED ON THE VEHICLE (2026-10-16), not derived from a drawing. The two
+//  thrusters are mounted anti-parallel: driving them equally spins the boat,
+//  and driving them oppositely moves it fore and aft. That is the reverse of
+//  an ordinary differential drive, so the two channels swap roles here:
+//
+//      thrust = ny             turn = nx
+//      left   = thrust + turn
+//      right  = turn  - thrust
 //      then linearly mapped onto [1000, 2000] us, neutral 1500
 //
-//      ny=+1, nx= 0 -> L=2000 R=2000   both forward at equal speed
-//      ny=-1, nx= 0 -> L=1000 R=1000   both reversing
-//      ny= 0, nx=+1 -> L=2000 R=1000   pivot: left pushes harder -> nose right
-//      ny= 0, nx=-1 -> L=1000 R=2000   pivot: right pushes harder -> nose left
-//      ny=+1, nx=+1 -> L=2000 R=1500   ahead, veering right
-//      ny=-1, nx=+1 -> L=1000 R=1500   reversing, tail swings right
-//
-//  Why +x drives the *left* thruster harder: that is ordinary differential
-//  steering. Left faster than right yaws the nose to the right.
+//      ny=+1, nx= 0 -> L=2000 R=1000   travels forward
+//      ny=-1, nx= 0 -> L=1000 R=2000   travels back
+//      ny= 0, nx=+1 -> L=2000 R=2000   spins, nose to the right
+//      ny= 0, nx=-1 -> L=1000 R=1000   spins, nose to the left
 //
 //  The host guarantees the sign convention: nx>0 means the stick is to the
-//  right, ny>0 means forward (pad_bridge.py owns the raw axis signs). This
-//  function and that convention are a matched pair - flipping the convention
-//  here turns the boat around.
+//  right, ny>0 means forward (pad_bridge.py owns the raw axis signs).
 //
-//  One more thing to verify on the water: if the two thrusters are mounted
-//  mirror-image, or one motor's phase wires are swapped, the real direction
-//  comes out reversed. That is wiring, not code.
+//  If the thrusters are ever remounted so that they match each other, this
+//  comes out backwards and wants the ordinary differential form instead:
+//      left  = thrust + turn
+//      right = thrust - turn
+//  Which of the two is in force is a property of the vehicle, so it is
+//  recorded here with the date it was measured rather than guessed at.
+//
+//  There is no reversing-steering convention here. It used to flip the
+//  steering sense when the forward channel went negative, which is how a car
+//  reverses. With the channels swapped that would flip on left and right
+//  instead, which is not the same thing at all. This is tank steering.
 // ---------------------------------------------------------------------------
 
 // Deadzone with linear rescaling.
@@ -73,23 +79,11 @@ inline int unitToPulse(float v) {
 }
 
 inline void mixToTargets(float nx, float ny, int &targetL, int &targetR) {
-  const float y = applyDeadzone(ny);
-  const float x = applyDeadzone(nx);
+  const float thrust = applyDeadzone(ny);
+  const float turn   = applyDeadzone(nx);
 
-  // Reversing flips the steering sense, so that pushing right always swings
-  // the boat right - the wheel convention, and how a real car reverses.
-  // Without it the boat yaws the same way whichever direction it is going
-  // (the tank convention). Both are self-consistent; this firmware uses the
-  // wheel one.
-  //
-  // The cost, stated plainly: steering flips as the stick passes through
-  // centre. A real car behaves the same way. Since ny has a deadzone the flip
-  // happens between reverse and forward, where the boat is pivoting anyway
-  // rather than travelling.
-  const float dir = (y < 0.0f) ? -1.0f : 1.0f;
-
-  targetL = unitToPulse(y + dir * x);
-  targetR = unitToPulse(y - dir * x);
+  targetL = unitToPulse(thrust + turn);
+  targetR = unitToPulse(turn - thrust);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,10 +131,13 @@ void loop() {
   if (comms::linkOk(now) && c.enable) {
     int l = 0, r = 0;
     mixToTargets(c.nx, c.ny, l, r);
-    // The vertical thruster takes vz straight through. The host has already
-    // resolved the two triggers into one signed value - including the rule
-    // that pressing both at once means stop - so there is nothing to mix.
-    thrusters::setTarget(l, r, unitToPulse(c.vz));
+    // The host has already resolved the two triggers into one signed value -
+    // including the rule that pressing both at once means stop - so vz needs
+    // no mixing. It is negated on the way out because this vehicle's vertical
+    // thruster is the other way round from its ESC: 2000 drives it down.
+    // Measured 2026-10-16. vz itself stays "positive is up", which is what the
+    // Z= field in the telemetry means and what the console labels from.
+    thrusters::setTarget(l, r, unitToPulse(-c.vz));
   } else {
     thrusters::setNeutral();
   }

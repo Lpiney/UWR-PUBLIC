@@ -312,16 +312,21 @@ class ConsoleTaskTests(TestCase):
         self.assertFalse(self.con.task.capturing)
 
     def test_the_vertical_row_reads_as_a_direction(self):
-        """One row, labelled by direction: the thruster has a single pulse
-        width, so UP and DOWN are the two ends of the same number."""
-        self.assertEqual(vertical_label(2000), "UP")
-        self.assertEqual(vertical_label(1600), "UP")
-        self.assertEqual(vertical_label(1000), "DOWN")
-        self.assertEqual(vertical_label(1400), "DOWN")
-        # Deadband, so the label does not flicker while the value settles.
-        for us in (1500, 1501, 1502, 1499, 1498):
-            with self.subTest(us=us):
-                self.assertEqual(vertical_label(us), "HOLD")
+        """One row, labelled by direction: the thruster has a single channel,
+        so UP and DOWN are the two ends of the same value.
+
+        Labelled from the commanded vz, not the pulse width. The vehicle's
+        vertical thruster is mounted the other way round, so pulse 1000 drives
+        it up - a label read off the pulse would say the opposite of what the
+        ROV does."""
+        self.assertEqual(vertical_label(1.0), "UP")
+        self.assertEqual(vertical_label(0.4), "UP")
+        self.assertEqual(vertical_label(-1.0), "DOWN")
+        self.assertEqual(vertical_label(-0.4), "DOWN")
+        # Deadband, so the label does not flicker while the command settles.
+        for z in (0.0, 0.01, -0.01, 0.04, -0.04):
+            with self.subTest(z=z):
+                self.assertEqual(vertical_label(z), "HOLD")
 
     def test_a_button_selects_the_tag_task(self):
         pressed = [0] * 10

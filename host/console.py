@@ -130,17 +130,27 @@ PULSE_MIN = 1000
 PULSE_MAX = 2000
 PULSE_NEUTRAL = 1500
 
+# Commanded vz below this reads as no command, so the UP / HOLD / DOWN label
+# does not flicker while the stick settles.
+VERTICAL_DEADBAND = 0.05
 
-def vertical_label(us: int) -> str:
+
+def vertical_label(z: float) -> str:
     """UP / HOLD / DOWN for the vertical thruster.
 
-    One row rather than two: the thruster has a single pulse width, so UP and
-    DOWN are the two ends of the same number. A deadband around neutral keeps
-    the label from flickering while the value settles.
+    Read from the commanded direction, not from the pulse width. The pulse is
+    whatever number the ESC is given, and on this vehicle the vertical thruster
+    is mounted the other way round, so 1000 drives it up: labelling from the
+    pulse would put the word opposite to what the ROV does. The firmware owns
+    that inversion; Z= in the telemetry stays "positive is up".
+
+    One row rather than two: the thruster has a single channel, so UP and DOWN
+    are the two ends of the same value. A deadband keeps the label from
+    flickering while the command settles.
     """
-    if us > PULSE_NEUTRAL + 2:
+    if z > VERTICAL_DEADBAND:
         return "UP"
-    if us < PULSE_NEUTRAL - 2:
+    if z < -VERTICAL_DEADBAND:
         return "DOWN"
     return "HOLD"
 
@@ -1097,7 +1107,7 @@ class Console:
 
         fs, pad, gap = 0.5, 9, 6
         rows = [("L", telem.l_us), ("R", telem.r_us),
-                (vertical_label(telem.v_us), telem.v_us)]
+                (vertical_label(telem.z), telem.v_us)]
         label_w, label_h = _text_wh(f"{'DOWN':<5}{PULSE_MAX:4d}", fs)
         line_h = label_h + gap
         bar_w, bar_h = 180, label_h - 6
