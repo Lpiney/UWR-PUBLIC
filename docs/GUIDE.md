@@ -373,7 +373,9 @@ P wifiRetryMs 30000
 | 序列埠全是亂碼 | 鮑率不是 115200 |
 | 燒錄後反覆重啟 | 有東西接到 GPIO33~37（PSRAM 佔用） |
 | 攝影機開不起來 | 被 Teams / Zoom 佔著，先關掉 |
-| `command not found: pio` | `~/.platformio/penv/bin/pio`（macOS）或裝 VS Code 擴充 |
+| `command not found: pio` | macOS：`~/.platformio/penv/bin/pio`。Windows：`python -m platformio`，或裝 VS Code 擴充 |
+| **PowerShell 說 `&&` 不是有效的分隔符號** | Windows 內建的是 PowerShell 5.1，**不支援 `&&`**。用 `;` 或分成兩行 |
+| `pio` 被 Application Control 擋掉 | 改用 VS Code 的 PlatformIO，或 `python -m platformio` |
 | 找不到序列埠 | 只有一個埠插著時自動偵測一定找得到；兩個都插的話用 `--port` 指定 |
 
 ---

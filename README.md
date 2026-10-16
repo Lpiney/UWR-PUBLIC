@@ -104,11 +104,24 @@ GPIO19/20（原生 USB）、GPIO43/44（UART0）、GPIO0/3/45/46（strapping）�
 
 ### 韌體
 
+在 `firmware/ESP32/` 目錄下執行：
+
+**macOS / Linux**
+
 ```bash
-cd firmware/ESP32
 ~/.platformio/penv/bin/pio run                 # 編譯
 ~/.platformio/penv/bin/pio run -t upload       # 燒錄
 ```
+
+**Windows**
+
+```powershell
+pio run
+pio run -t upload
+```
+
+Windows 上 `pio` 通常已經在 PATH 上（`python -m pip install platformio` 裝的）。
+真的找不到就用 `python -m platformio run`。
 
 只有一個建置環境，**兩種板子都是這條指令**：
 

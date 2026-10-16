@@ -28,6 +28,40 @@ VS Code 裡按 **`` Ctrl+` ``**（Ctrl 加鍵盤左上角 `` ` ``），
 
 > 想用命令提示字元（cmd）也可以，指令一樣。
 
+### ⚠️ PowerShell 的三個坑
+
+**① 不支援 `&&`。**
+
+Windows 內建的是 PowerShell **5.1**，`&&` 是 PowerShell 7 才有的。
+看到這個錯誤就是它：
+
+```
+The token '&&' is not a valid statement separator in this version.
+```
+
+**一次打一行**（最保險），或用 `;` 分隔：
+
+```
+pio device monitor
+```
+
+> 網路上和 macOS 的文件很常寫 `cd xxx && pio ...`——**那個在 Windows 上不能貼**。
+
+**② `pio` 的路徑不一樣。**
+
+| | 路徑 |
+|---|---|
+| macOS | `~/.platformio/penv/bin/pio` |
+| **Windows** | **`pio`**（pip 裝的話已經在 PATH 上） |
+
+找不到 `pio` 就用 `python -m platformio`，效果一樣。
+
+**③ `cd` 進去的目錄格式。**
+
+PowerShell 兩種斜線都吃（`firmware\ESP32` 和 `firmware/ESP32`），
+但**先看清楚提示字元**——如果你已經在那個目錄裡，就不要重複 `cd`，
+否則會變成 `firmware\ESP32\firmware\ESP32` 而報錯。
+
 ---
 
 ## 步驟 2：找出板子在哪個 COM 埠
