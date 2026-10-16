@@ -280,6 +280,7 @@ pio run -d firmware\ESP32 -t upload --upload-port COM5
 | `R` | 恢復預設參數 |
 | `W` | 立刻連 Wi-Fi |
 | `F` | 立刻去 HTTP 取一次資料 |
+| `L` | 掃描並列出看得到的 Wi-Fi（回報 `NET` 行） |
 | `S` | 查詢狀態 |
 | `B` | 重啟 |
 
@@ -298,6 +299,7 @@ pio run -d firmware\ESP32 -t upload --upload-port COM5
 |---|---|
 | `OK` / `ERR` / `EV` | 指令結果／錯誤／事件 |
 | `DATA <text>` | Mission 1 取到的內容，要顯示給裁判看 |
+| `NET <rssi> <ch> <ssid>` | `L` 的掃描結果，夾在 `NET BEGIN` 和 `NET <n> END` 之間 |
 | `JOY ...` | 驅動遙測，每 50 ms 一行 |
 | `ST ...` | Mission 1 狀態（Wi-Fi、IP、HTTP 碼），每 500 ms 一行 |
 

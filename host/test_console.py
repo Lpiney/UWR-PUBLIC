@@ -468,6 +468,93 @@ class CommandLineTests(TestCase):
         self.assertTrue(fitted.endswith("END"))
 
 
+class WifiPanelTests(TestCase):
+    """What the WiFi screen has to answer without anything being typed: is it
+    connected, to which network, and what address is it fetching."""
+
+    def setUp(self):
+        self.con = make_console()
+        self.con._switch(TaskWifi)
+        self.board = self.con.board
+
+    def test_entering_asks_for_a_fetch_and_the_two_settings(self):
+        """The network and the address are the two things needed to work out
+        why a fetch is not coming back, and neither is visible otherwise."""
+        self.board.raw.clear()
+        self.con.task.enter(self.con)
+        self.assertEqual(self.board.raw, ["F\n", "G ssid\n", "G url\n"])
+
+    def test_the_panel_shows_the_network_and_the_address(self):
+        self.con._on_board_line("OK ssid = HUAWEI JACK")
+        self.con._on_board_line("OK url = http://192.168.4.1:8080")
+        text = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertIn("HUAWEI JACK", text)
+        self.assertIn("http://192.168.4.1:8080", text)
+
+    def test_a_network_name_with_spaces_survives(self):
+        """The ST line is split on whitespace, so the SSID cannot be carried
+        there - "HUAWEI JACK" would arrive as "HUAWEI". This reply is read as
+        the rest of the line instead."""
+        self.con._on_board_line("OK ssid = HUAWEI JACK")
+        self.assertEqual(self.con.mission["ssid"], "HUAWEI JACK")
+
+    def test_a_p_command_updates_the_panel_as_well(self):
+        self.con._on_board_line("OK P url = http://10.0.0.5:8000")
+        self.assertEqual(self.con.mission["url"], "http://10.0.0.5:8000")
+
+    def test_an_answer_about_another_parameter_is_not_mistaken_for_state(self):
+        self.con._on_board_line("OK P neutral = 1500")
+        self.assertNotIn("neutral", self.con.mission)
+
+    def test_the_commands_for_changing_network_are_offered(self):
+        cmds = [c for c, _ in self.con.task.commands(self.con)]
+        self.assertIn("P ssid <name>", cmds)
+        self.assertIn("P pass <password>", cmds)
+        self.assertIn("W", cmds)
+
+    def scan(self, *names):
+        self.con._on_board_line("NET BEGIN")
+        for i, name in enumerate(names):
+            self.con._on_board_line(f"NET -{40 + i} {6 + i} {name}")
+        self.con._on_board_line(f"NET {len(names)} END")
+
+    def test_a_scan_fills_the_panel(self):
+        """It is the one thing that tells a wrong password apart from an
+        access point that is not there, and those need opposite responses."""
+        self.scan("UR_Field", "My Network")
+        text = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertIn("UR_Field", text)
+        self.assertIn("My Network", text)
+
+    def test_a_second_scan_replaces_the_first(self):
+        self.scan("Old")
+        self.scan("New")
+        self.assertEqual([n[2] for n in self.con.mission["nets"]], ["New"])
+
+    def test_the_scan_holds_the_panel_while_it_is_showing(self):
+        """DATA cannot answer "why is nothing coming back"; the list can."""
+        self.con.mission["data"] = "[Congratulations!!! ...]"
+        self.scan("UR_Field")
+        text = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertIn("UR_Field", text)
+        self.assertNotIn("Congratulations", text)
+
+    def test_entering_the_task_clears_a_stale_scan(self):
+        self.scan("UR_Field")
+        self.con._switch(TaskWifi)          # back to Manual
+        self.con._switch(TaskWifi)          # in again
+        self.assertEqual(self.con.mission["nets"], [])
+
+    def test_the_scan_command_is_offered(self):
+        self.assertIn("L", [c for c, _ in self.con.task.commands(self.con)])
+
+    def test_the_hints_draw_while_typing_without_breaking_the_frame(self):
+        frame = frame_with_tags(7)
+        self.con._key(ord("t"))
+        out = self.con.render(telemetry(), True, frame=frame.copy())
+        self.assertEqual(out.shape, frame.shape)
+
+
 class UprightTests(TestCase):
     """The camera is mounted upside down on the ROV, so every frame is
     rotated 180 degrees as it comes off the device."""

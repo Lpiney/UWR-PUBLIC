@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -104,6 +105,15 @@ TAG_CAPTURES_EXPECTED = 3
 # to gain past this; a limit that bites is better than one that silently
 # throws the line away.
 COMMAND_MAX = 80
+
+# Networks shown in the WiFi panel. The firmware reports up to M1_SCAN_MAX;
+# more than this and the bottom-left panel grows up into the status stack.
+NETS_SHOWN = 5
+
+# "OK url = http://...", and "OK P url = http://..." after a P command. The
+# value is taken as the rest of the line: an SSID may contain spaces, so
+# splitting on whitespace would cut "HUAWEI JACK" to "HUAWEI".
+REPLY_RE = re.compile(r"^OK\s+(?:P\s+)?(\w+)\s*=\s*(.*)$")
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 THICKNESS = 1
@@ -527,6 +537,11 @@ class Task:
         """
         return []
 
+    def commands(self, ctx) -> list:
+        """Board commands worth showing while one is being typed, as
+        (command, what it does) pairs."""
+        return []
+
     def capture(self, ctx) -> bool:
         """Recognize once, right now. False if this task has nothing to capture."""
         return False
@@ -800,9 +815,16 @@ class TaskWifi(Task):
     hint = "WiFi"
 
     def enter(self, ctx):
+        # A scan from a previous visit is stale and would keep the DATA line
+        # hidden, so start clean.
+        ctx.mission["nets"] = []
         if ctx.board is not None:
             try:
-                ctx.board.send_raw("F\n")
+                # One fetch, so the referee sees current data, plus the two
+                # settings worth having on screen while troubleshooting: which
+                # network the board joined, and what address it is fetching.
+                for line in ("F", "G ssid", "G url"):
+                    ctx.board.send_raw(line + "\n")
             except Exception:
                 pass
 
@@ -811,13 +833,37 @@ class TaskWifi(Task):
         # listed here because this is where the operator needs it.
         return [("T", "type a command")]
 
+    def commands(self, ctx):
+        # Shown while typing. The window has no clipboard, so anything that
+        # has to be typed by hand has to be readable off the screen.
+        return [("L", "list visible networks"),
+                ("G url", "show the address"),
+                ("P url <ip:port>", "set the address"),
+                ("P ssid <name>", "change network"),
+                ("P pass <password>", "and its password"),
+                ("W", "reconnect now")]
+
     def info(self, ctx):
         m = ctx.mission
         lines = [("MODE  Mission 1", AMBER),
+                 (f"ssid  {m['ssid']}", WHITE),
+                 (f"url   {m['url']}", WHITE),
                  (f"wifi  {m['wifi']}   rssi {m['rssi']}", WHITE),
                  (f"ip    {m['ip']}", WHITE),
                  (f"http  {m['http']}", WHITE)]
-        if m["data"]:
+        # A scan answers a question that DATA cannot, so while one is on screen
+        # it takes the space: you scan when nothing is coming back, and then
+        # the list of what the board can see is the thing worth looking at.
+        if m["nets"]:
+            # Strongest first: a scan comes back in whatever order the radio
+            # found them, and the one worth joining is the one with signal.
+            # Capped, or a hall full of phones pushes the panel up into the
+            # status stack.
+            for i, (rssi, channel, ssid) in enumerate(
+                    sorted(m["nets"], key=lambda n: -n[0])[:NETS_SHOWN]):
+                label = "nets  " if i == 0 else "      "
+                lines.append((f"{label}{rssi:>5} ch{channel:<3} {ssid}", WHITE))
+        elif m["data"]:
             # The whole string is shown, wrapped rather than cut: this is the
             # line the referee reads, and a truncation would be silent. The
             # firmware already caps it at 180 characters.
@@ -851,7 +897,7 @@ class Console:
         self.now = time.monotonic()
         self.last_frame = None
         self.mission = {"wifi": "-", "rssi": "-", "ip": "-", "http": "-",
-                        "data": ""}
+                        "data": "", "ssid": "-", "url": "-", "nets": []}
         self.apriltag = AprilTagScanner(mode="largest", min_hits=3, expected=3)
         self.color = ColorDetector()
         self.mouse = Mouse()
@@ -878,10 +924,31 @@ class Console:
                 k = k.lower()
                 if k in ("wifi", "rssi", "ip", "http"):
                     self.mission[k] = v
+        elif tag == "NET":
+            # A scan, sent as BEGIN / one line per network / END. The network
+            # name is last because it may contain spaces.
+            rest = line[len(parts[0]):].strip()
+            if rest == "BEGIN":
+                self.mission["nets"] = []
+            elif rest.endswith(" END"):
+                pass
+            else:
+                rssi, _, tail = rest.partition(" ")
+                channel, _, ssid = tail.partition(" ")
+                try:
+                    self.mission["nets"].append((int(rssi), channel, ssid))
+                except ValueError:
+                    pass          # not a line we recognise; nothing to show
         elif tag in ("OK", "ERR", "EV"):
             # Held until the next command replaces it, not faded after a few
             # seconds: an error is something to keep reading.
             self.reply = (line, {"OK": GREEN, "ERR": RED}.get(tag, AMBER))
+            # An answer to G or P also says what the board is now set to, and
+            # the panel should follow it. Taken as the rest of the line rather
+            # than as a token, because an SSID may contain spaces.
+            m = REPLY_RE.match(line)
+            if m and m.group(1) in self.mission:
+                self.mission[m.group(1)] = m.group(2)
 
     # ---- typing a command ---------------------------------------------
     def _key(self, key) -> bool:
@@ -1052,13 +1119,28 @@ class Console:
             ty += line_h
 
     def _draw_hints(self, img):
-        """Two panels in the bottom-right corner: the controller map, and just
-        above it the keyboard shortcuts for whatever task is active.
+        """The bottom-right corner: the controller map, and just above it the
+        keyboard shortcuts for whatever task is active.
 
         Both are titled, because the operator has to know which device each
         letter belongs to: C is a button on one and a key on the other, and R
         appears only on the keyboard.
+
+        While a command is being typed they are replaced by the board
+        commands. That is what the operator needs at that moment, every key
+        belongs to the command line anyway so the key hints would be
+        misleading, and it avoids the two panels growing into each other -
+        the window has no clipboard, so the commands have to be on screen.
         """
+        if self.typing is not None:
+            rows = self.task.commands(self)
+            if rows:
+                width = max(len(c) for c, _ in rows)
+                draw_panel(img, img.shape[1] - 16, img.shape[0] - 16,
+                           [(f"{c:<{width}}  {d}", GREY) for c, d in rows],
+                           anchor="br", fs=0.5, title="BOARD COMMANDS")
+                return
+
         lines = []
         for task_cls in TASKS:
             active = type(self.task) is task_cls

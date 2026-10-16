@@ -39,13 +39,29 @@ inline QueueHandle_t& q() { static QueueHandle_t h = nullptr; return h; }
 // volatile accesses, so the worst case is one tick of staleness.
 inline volatile bool& reqConnect() { static volatile bool v = true;  return v; }
 inline volatile bool& reqFetch()   { static volatile bool v = false; return v; }
+inline volatile bool& reqScan()    { static volatile bool v = false; return v; }
 inline volatile int&  wifiState()  { static volatile int  v = 0;     return v; }
 inline volatile int&  rssi()       { static volatile int  v = 0;     return v; }
+// Last WiFi.status() seen by the network task, so the reason a connection is
+// not coming up can be reported without the other core touching the WiFi
+// stack. -1 until the task has looked.
+inline volatile int&  wifiReason() { static volatile int  v = -1;    return v; }
 
 // 0 = idle / 1 = connecting / 2 = connected / 3 = lost
+//
+// While connecting, say why rather than just that it is happening. "CONNECTING"
+// forever is the one report that cannot be acted on: a wrong password and an
+// access point that is not in range look identical, and they need opposite
+// responses - type the password again, or go and find the organisers.
 inline const char* wifiStateName() {
   switch (wifiState()) {
-    case 1: return "CONNECTING";
+    case 1:
+      switch (wifiReason()) {
+        case WL_NO_SSID_AVAIL:   return "NO_SSID";    // not in range, or 5 GHz
+        case WL_CONNECT_FAILED:  return "BAD_PASS";
+        case WL_CONNECTION_LOST: return "LOST";
+        default:                 return "CONNECTING";
+      }
     case 2: return "CONNECTED";
     case 3: return "LOST";
     default: return "IDLE";
@@ -154,6 +170,7 @@ inline void task(void *) {
         nextPoll = 0;                // fetch immediately once connected
       }
     } else {
+      wifiReason() = WiFi.status();
       if (wifiState() == 2) {
         wifiState() = 3;
         post("EV", "wifi: disconnected");
@@ -163,6 +180,31 @@ inline void task(void *) {
         WiFi.begin(p.ssid.c_str(), p.pass.c_str());
         nextRetry = millis() + p.wifiRetryMs;
       }
+    }
+
+    // ---- 2b. scan on request ----
+    //
+    // This is how a failed association gets diagnosed. "CONNECTING" cannot
+    // distinguish a wrong password from an access point that is not there,
+    // and a list of what the board can actually see settles it in one look:
+    // the name is in the list and it will not join, or the name is not in the
+    // list at all and no amount of retyping the password will help.
+    //
+    // A scan takes the radio off channel for a second or two, so it is done
+    // only when asked for. It may blip a working connection; the normal retry
+    // brings it back.
+    if (reqScan()) {
+      reqScan() = false;
+      const int n = WiFi.scanNetworks();
+      post("NET", "BEGIN");
+      for (int i = 0; i < n && i < M1_SCAN_MAX; ++i) {
+        // SSID last: it may contain spaces, and the reader takes the rest of
+        // the line for it.
+        post("NET", String(WiFi.RSSI(i)) + " " + String(WiFi.channel(i)) + " " +
+                    (WiFi.SSID(i).length() ? WiFi.SSID(i) : String("<hidden>")));
+      }
+      post("NET", String(n) + " END");
+      WiFi.scanDelete();
     }
 
     // ---- 3. periodic fetch ----
@@ -184,7 +226,7 @@ inline void task(void *) {
 }
 
 inline void begin() {
-  q() = xQueueCreate(12, sizeof(Ev));
+  q() = xQueueCreate(M1_QUEUE_LEN, sizeof(Ev));
   xTaskCreatePinnedToCore(task, "mission1", M1_TASK_STACK, nullptr, 1, nullptr,
                           M1_TASK_CORE);
 }

@@ -185,6 +185,7 @@ inline void handle(const String &raw) {
   // ---------- Mission 1 ----------
   if (name == "W") { mission1::reqConnect() = true; ok("connecting wifi"); return; }
   if (name == "F") { mission1::reqFetch()   = true; ok("fetching now");    return; }
+  if (name == "L") { mission1::reqScan()    = true; ok("scanning wifi");   return; }
 
   // ---------- status / reboot ----------
   if (name == "S") { ok(statusLine()); return; }
