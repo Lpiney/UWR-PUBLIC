@@ -10,6 +10,7 @@
 | [Mission 3：循線](#mission-3循線30-分) | 30 | 純手動 |
 | [Mission 4：物件回收](#mission-4物件回收40-分) | 40 | 純手動 |
 | [Mission 5：顏色桿辨識與擊打](#mission-5顏色桿辨識與擊打50-分) | 50 | ✅ 辨識／手動 |
+| [附錄：送指令給板子](#附錄送指令給板子) | — | Mission 1 要用 |
 
 ---
 
@@ -27,9 +28,22 @@
 大會公布的是 **IP 和 port**（例如 `192.168.4.1`、`8080`），有路徑也要帶上。
 
 1. 板子用 USB 線接上筆電
-2. 開序列埠監視器，鮑率 **115200**
+2. 開序列埠監視器（鮑率 **115200**）
 
-   （Windows 上怎麼找埠、怎麼開，見[這份](Operation-Manuals/Windows-Serial-Console.md)）
+   **Windows**——VS Code 終端機，在 `firmware\ESP32` 目錄下：
+
+   ```powershell
+   pio device monitor
+   ```
+
+   **macOS**：
+
+   ```bash
+   ~/.platformio/penv/bin/pio device monitor
+   ```
+
+   開不起來、或不知道該選哪個 COM 埠，見[附錄](#附錄送指令給板子)。
+
 3. 打這行，按 Enter：
 
    ```
@@ -319,3 +333,156 @@ RESULT   7
 - [ ] 閾值在真實泳池校準過了嗎（不要在實驗室的桌面燈光下校準就上場）
 - [ ] **裁判喊的順序記下來了嗎**（程式不會幫你記）
 - [ ] 三根桿子的位置確認過了嗎
+
+---
+
+# 附錄：送指令給板子
+
+改板子設定用的——塔的位址、Wi-Fi。**只有 Mission 1 需要**，
+但換電腦、換場地時都用得到。
+
+## 序列埠監視器不是終端機
+
+`P url 192.168.4.1:8080` **不是** shell 指令。
+
+| | 在哪裡打 | 例子 |
+|---|---|---|
+| **Shell 指令** | 終端機 | `pio run -t upload`、`git push` |
+| **板子指令** | **序列埠監視器** | `P url …`、`G ssid`、`S` |
+
+終端機只是視窗。序列埠監視器是**跑在終端機裡面的一個程式**，負責跟板子對話。
+所以要先用終端機把監視器**開起來**，然後才在裡面打板子指令。
+
+## 找出板子在哪個 COM 埠（Windows）
+
+```powershell
+pio device list
+```
+
+```
+COM4 | 透過藍牙連結的標準序列 (COM4)
+COM5 | USB Serial Port (COM5)
+```
+
+**看描述，不要看編號。** Windows 的埠名只有 `COM` 加數字，看不出是什麼裝置。
+
+| 描述 | 是不是板子 |
+|---|---|
+| `USB Serial Port` | ✅ FTDI 橋接晶片 |
+| `USB-SERIAL CH340` | ✅ CH340 橋接晶片 |
+| `Silicon Labs CP210x` | ✅ CP210x 橋接晶片 |
+| `USB Serial Device` | ✅ ESP32 自己的 USB |
+| **`透過藍牙連結的標準序列`／`Bluetooth`** | ❌ **不是**，是電腦的藍牙 |
+| `Communications Port` | ❌ 主機板內建 |
+
+> ⚠️ **整排都是藍牙的情況很常見。** 那是電腦自己的藍牙序列埠，跟板子完全無關。
+> 選錯的話打什麼都沒反應，而且不會報錯。
+
+`pio` 被 Windows 擋掉時，改用：
+
+```powershell
+python -m serial.tools.list_ports -v
+```
+
+（不加 `-v` 只印埠名，看不出哪個是板子）
+
+## 開監視器
+
+| 方法 | 怎麼做 |
+|---|---|
+| **A. VS Code 的 PlatformIO**（推薦） | 左側 PlatformIO 圖示 → `PROJECT TASKS` → **`Monitor`**。自動找埠、自動用 115200 |
+| **B. 命令列** | 在 `firmware\ESP32` 下：`pio device monitor --port COM5 --baud 115200` |
+| **C. `pio` 被擋掉時** | `python -m serial.tools.miniterm COM5 115200` |
+
+## 送指令
+
+監視器開起來之後，畫面會**自己一直跳**——
+
+```
+JOY X=+0.000 Y=+0.000 Z=+0.000 MAG=0.000 DEAD READY=1 L=1500 R=1500 V=1500 EN=0 LINK=0
+```
+
+**這是正常的**，板子每 50 毫秒回報一次。**直接在這個畫面打指令**，打完整行按 Enter：
+
+```
+P url 192.168.4.1:8080
+```
+
+板子回：
+
+```
+OK P url = http://192.168.4.1:8080
+```
+
+**看到 `OK` 才算成功。**
+
+> 打字的畫面會被遙測洗掉，看起來很亂——**沒關係，你打的字不會被吃掉**，
+> 盲打完整行按 Enter 就好。
+
+### 常用指令
+
+| 指令 | 作用 |
+|---|---|
+| `G ssid` | 看板子現在用哪個 Wi-Fi 名稱 |
+| `G url` | 看板子現在用哪個位址 |
+| `G` | 列出**所有**參數 |
+| `S` | 看狀態（Wi-Fi、IP、HTTP 碼） |
+| `P url 192.168.4.1:8080` | 設定塔的位址 |
+| `P ssid 名稱` | 設定 Wi-Fi 名稱（**名稱有空格也可以**） |
+| `P pass 密碼` | 設定 Wi-Fi 密碼 |
+| `W` | 立刻重連 Wi-Fi |
+| `F` | 立刻抓一次資料 |
+| `B` | 重啟板子 |
+
+> ⚠️ **不要送 `R`。** 那是「全部恢復預設值」——除了 Wi-Fi，還會把
+> `neutral`、`trimL`、`trimR`、`trimV`、`fsMs` 一起清掉，
+> 實驗室校準過的配平就沒了。要改哪一項就 `P` 哪一項。
+
+> **設定存在板子的 NVS，斷電和重新燒錄都不會掉。** 一天只要設一次。
+
+## 離開
+
+按 **`Ctrl+C`**。沒反應就試 **`Ctrl+]`**。
+
+**一定要離開**，不然 `console.py` 開不了這個埠。
+
+## Windows 上的三個坑
+
+**① 不支援 `&&`。**
+
+Windows 內建的是 PowerShell **5.1**，`&&` 是 PowerShell 7 才有的。
+看到這個錯誤就是它：
+
+```
+The token '&&' is not a valid statement separator in this version.
+```
+
+**一次打一行**，或用 `;` 分隔。網路上和 macOS 的文件常寫
+`cd xxx && pio …`——**那個在 Windows 上不能貼**。
+
+**② `pio` 的路徑不一樣。**
+
+| | 路徑 |
+|---|---|
+| macOS | `~/.platformio/penv/bin/pio` |
+| **Windows** | **`pio`**（pip 裝的話已經在 PATH 上） |
+
+找不到就用 `python -m platformio device monitor`。
+
+**③ 不要重複 `cd`。**
+
+**先看提示字元**。如果已經在 `firmware\ESP32>`，就直接打 `pio device monitor`。
+
+## 出問題時
+
+| 現象 | 原因 |
+|---|---|
+| 打指令完全沒反應 | 埠選錯了。多半是選到藍牙那個 |
+| `cannot open COM5` | 埠被別的程式佔著——`console.py`、另一個監視器、或 Arduino IDE |
+| 監視器一片空白 | 板子沒通電，或選錯埠 |
+| 畫面全是亂碼 | 鮑率不是 115200 |
+| `pio` 一執行就被擋 | Windows 應用程式控制政策。改用 VS Code 的 Monitor，或 `python -m platformio` |
+| 回了 `ERR unknown parameter` | 參數名打錯，例如打成 `URL`。是小寫 `url` |
+
+> ⚠️ **監視器和 `console.py` 不能同時開。** 兩個程式搶同一個埠。
+> **流程永遠是：先關監視器 → 再開 `console.py`。**

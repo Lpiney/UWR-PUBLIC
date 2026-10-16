@@ -56,7 +56,7 @@ PlatformIO 用 VS Code 的擴充（「開啟資料夾」打開 `firmware\ESP32`�
 
 > **Windows 上要送指令給板子**（`P url …`、`G ssid` 那些），
 > 步驟、指令、以及怎麼認出正確的 COM 埠，見
-> [Windows：開序列埠監視器送指令](Operation-Manuals/Windows-Serial-Console.md)。
+> [比賽操作手冊的附錄](OPERATION-MANUAL.md#附錄送指令給板子)。
 
 **macOS / Linux**
 
