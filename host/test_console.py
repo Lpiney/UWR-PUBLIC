@@ -12,8 +12,9 @@ from unittest import TestCase
 import cv2
 import numpy as np
 
-from console import (BTN_APRILTAG, BTN_CAPTURE, Console, Pad, Task,
-                     TaskAprilTag, TaskColor, upright, vertical_label)
+from console import (AMBER, BTN_APRILTAG, BTN_CAPTURE, COMMAND_MAX, GREEN, RED,
+                     Console, Pad, Task, TaskAprilTag, TaskColor, TaskWifi,
+                     _text_wh, fit_text, upright, vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.color import DEFAULT_RANGES, sample_at
 from vision.test_apriltag import frame_with_tags
@@ -51,12 +52,13 @@ class FakeBoard:
         self.telem = None
         self.on_line = None
         self.sent = []
+        self.raw = []
 
     def send(self, nx, ny, vz, en):
         self.sent.append((nx, ny, vz, en))
 
     def send_raw(self, text):
-        pass
+        self.raw.append(text)
 
     def poll(self):
         pass
@@ -345,6 +347,125 @@ class ConsoleTaskTests(TestCase):
                          ["C", "1 2 3", "R", "D"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
+
+
+class CommandLineTests(TestCase):
+    """Typing a board command into the console window.
+
+    The alternative is a serial monitor, and its telemetry arrives 20 times a
+    second, so the one line you sent scrolls away before it can be read."""
+
+    ENTER, ESC, BACKSPACE = 13, 27, 8
+
+    def setUp(self):
+        self.con = make_console()
+        self.board = self.con.board
+
+    def type(self, text):
+        for ch in text:
+            self.con._key(ord(ch))
+
+    def test_t_starts_a_command(self):
+        self.assertIsNone(self.con.typing)
+        self.con._key(ord("t"))
+        self.assertEqual(self.con.typing, "")
+
+    def test_enter_sends_exactly_what_was_typed(self):
+        self.type("t")
+        self.type("P url 192.168.4.1:8080")
+        self.con._key(self.ENTER)
+        self.assertEqual(self.board.raw, ["P url 192.168.4.1:8080\n"])
+        self.assertIsNone(self.con.typing)
+
+    def test_case_survives_typing(self):
+        """Unlike the task keys, which are lowercased. P ssid takes a Wi-Fi
+        name, and those are case-sensitive."""
+        self.type("t")
+        self.type("P ssid HUAWEI JACK")
+        self.con._key(self.ENTER)
+        self.assertEqual(self.board.raw, ["P ssid HUAWEI JACK\n"])
+
+    def test_backspace_takes_the_last_character_back(self):
+        self.type("t")
+        self.type("P url 192.168.4.1:808O")     # letter O, not zero
+        self.con._key(self.BACKSPACE)
+        self.type("0")
+        self.con._key(self.ENTER)
+        self.assertEqual(self.board.raw, ["P url 192.168.4.1:8080\n"])
+
+    def test_escape_abandons_without_sending(self):
+        self.type("t")
+        self.type("P url nope")
+        self.con._key(self.ESC)
+        self.assertIsNone(self.con.typing)
+        self.assertEqual(self.board.raw, [])
+
+    def test_enter_on_an_empty_line_sends_nothing(self):
+        self.type("t")
+        self.con._key(self.ENTER)
+        self.assertEqual(self.board.raw, [])
+
+    def test_q_while_typing_is_a_letter_not_a_quit(self):
+        """Otherwise a Wi-Fi password containing q ends the program."""
+        self.type("t")
+        self.con._key(ord("q"))
+        self.assertTrue(self.con._key(ord("q")))
+        self.assertEqual(self.con.typing, "qq")
+
+    def test_reset_is_refused(self):
+        """R clears every parameter, not just the Wi-Fi: the bench trim
+        calibration goes with it. One keystroke away is too close."""
+        self.type("t")
+        self.type("R")
+        self.con._key(self.ENTER)
+        self.assertEqual(self.board.raw, [])
+        self.assertIn("R disabled", self.con.reply[0])
+
+    def test_something_that_merely_starts_with_r_is_allowed(self):
+        self.type("t")
+        self.type("REQUEST")
+        self.con._key(self.ENTER)
+        self.assertEqual(self.board.raw, ["REQUEST\n"])
+
+    def test_the_reply_is_kept_for_display(self):
+        """The console used to drop OK/ERR/EV entirely, so a firmware error
+        was invisible and a wrong setting looked like a silent board."""
+        self.assertIsNone(self.con.reply)
+        self.con._on_board_line("OK P url = http://192.168.4.1:8080")
+        self.assertIn("192.168.4.1:8080", self.con.reply[0])
+        self.assertEqual(self.con.reply[1], GREEN)
+        self.con._on_board_line("ERR unknown parameter: URL")
+        self.assertEqual(self.con.reply[1], RED)
+        self.con._on_board_line("EV url not set - send P url ...")
+        self.assertEqual(self.con.reply[1], AMBER)
+
+    def test_a_command_longer_than_the_limit_is_not_accepted(self):
+        self.type("t")
+        self.type("P url " + "x" * 200)
+        self.assertEqual(len(self.con.typing), COMMAND_MAX)
+
+    def test_the_wifi_task_advertises_the_key(self):
+        self.con._switch(TaskWifi)
+        self.assertIn("T", [k for k, _ in self.con.task.keys(self.con)])
+
+    def test_a_long_line_is_shortened_rather_than_cut_by_the_frame(self):
+        """draw_panel clamps its corner, so a line wider than the frame runs
+        off the edge and is cut silently - the operator sees a shorter answer
+        and no sign that part of it is missing."""
+        img = np.zeros((480, 640, 3), np.uint8)
+        long_reply = "OK " + "x" * 300
+        fitted = fit_text(long_reply, img, 0.5)
+        self.assertTrue(fitted.endswith("…"))
+        self.assertLessEqual(_text_wh(fitted, 0.5)[0], img.shape[1] - 48)
+        self.assertEqual(fit_text("OK url = http://192.168.4.1:8080", img, 0.5),
+                         "OK url = http://192.168.4.1:8080")
+
+    def test_keeping_the_tail_drops_the_front_instead(self):
+        """While typing, the cursor is at the end, so that is the end to keep."""
+        img = np.zeros((480, 640, 3), np.uint8)
+        fitted = fit_text("x" * 300 + "END", img, 0.5, keep_head=False)
+        self.assertTrue(fitted.startswith("…"))
+        self.assertTrue(fitted.endswith("END"))
 
 
 class UprightTests(TestCase):

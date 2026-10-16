@@ -33,6 +33,11 @@ The safety key is a toggle and always active, whatever task is selected. The
 task only decides what is displayed and what the camera is used for; the stick
 always drives.
 
+Pressing T opens a command line in the status stack: type a board command,
+press Enter, and the board's reply (OK / ERR / EV) stays on screen. It exists
+because the alternative is a serial monitor, whose telemetry arrives 20 times
+a second and scrolls the one line you sent out of sight before you can read it.
+
 Usage
     python3 console.py
 """
@@ -93,6 +98,12 @@ TAG_CAPTURE_HITS = 2
 # How many tags the mission asks for. Only used for the n/3 progress readout;
 # the answer is recomputed after every capture rather than waiting for three.
 TAG_CAPTURES_EXPECTED = 3
+
+# Longest command the console will accept, in characters. The firmware
+# discards any line longer than LINK_LINE_MAX (256) whole, so there is nothing
+# to gain past this; a limit that bites is better than one that silently
+# throws the line away.
+COMMAND_MAX = 80
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 THICKNESS = 1
@@ -364,6 +375,25 @@ def _panel_box(img, x, y, w, h, anchor):
         cv2.addWeighted(np.zeros_like(roi), 0.68, roi, 0.32, 0, roi)
         cv2.rectangle(img, (x, y), (x + w, y + h), (110, 110, 110), 1)
     return x, y
+
+
+def fit_text(text, img, fs, keep_head=True, margin=48):
+    """Shorten text until it fits across the frame.
+
+    draw_panel clamps its corner to the frame but a line wider than the frame
+    still runs off the right edge and is cut without saying so. Trimming here
+    at least leaves an ellipsis behind, so a shortened answer does not look
+    like a complete one.
+    """
+    avail = img.shape[1] - margin
+    if _text_wh(text, fs)[0] <= avail:
+        return text
+    while text:
+        shown = text + "…" if keep_head else "…" + text
+        if _text_wh(shown, fs)[0] <= avail:
+            return shown
+        text = text[:-1] if keep_head else text[1:]
+    return "…"
 
 
 def draw_panel(img, x, y, lines, anchor="tl", fs=0.5, pad=9, gap=6, title=None):
@@ -776,6 +806,11 @@ class TaskWifi(Task):
             except Exception:
                 pass
 
+    def keys(self, ctx):
+        # T is handled by the console itself, so it works in every task; it is
+        # listed here because this is where the operator needs it.
+        return [("T", "type a command")]
+
     def info(self, ctx):
         m = ctx.mission
         lines = [("MODE  Mission 1", AMBER),
@@ -820,12 +855,15 @@ class Console:
         self.apriltag = AprilTagScanner(mode="largest", min_hits=3, expected=3)
         self.color = ColorDetector()
         self.mouse = Mouse()
+        self.typing = None          # the command being typed, or None
+        self.reply = None           # (text, colour) from the board, or None
         board.on_line = self._on_board_line
 
     # ---- board events -------------------------------------------------
     def _on_board_line(self, line: str):
         """Consume the non-JOY lines: ST carries Mission 1 status, DATA the
-        payload shown to the referee."""
+        payload shown to the referee, and OK/ERR/EV the answer to whatever
+        was last sent."""
         parts = line.split()
         if not parts:
             return
@@ -840,6 +878,69 @@ class Console:
                 k = k.lower()
                 if k in ("wifi", "rssi", "ip", "http"):
                     self.mission[k] = v
+        elif tag in ("OK", "ERR", "EV"):
+            # Held until the next command replaces it, not faded after a few
+            # seconds: an error is something to keep reading.
+            self.reply = (line, {"OK": GREEN, "ERR": RED}.get(tag, AMBER))
+
+    # ---- typing a command ---------------------------------------------
+    def _key(self, key) -> bool:
+        """One keystroke from the window. False means quit."""
+        if self.typing is not None:
+            # While a command is being typed every key belongs to it,
+            # including q and Esc - otherwise there is no way to type a Wi-Fi
+            # password that contains one.
+            self._typing_key(key)
+            return True
+        if key in (ord("q"), 27):
+            return False
+        if 32 <= key < 127:
+            ch = chr(key).lower()
+            if ch == "s":
+                # Saving works the same in every task, so it does not belong
+                # to any one of them.
+                self.snapshot(self.task.view(self, self.last_frame))
+            elif ch == "t":
+                self.start_typing()
+            else:
+                self.task.on_key(ch, self)
+        return True
+
+    def start_typing(self):
+        self.typing = ""
+
+    def _typing_key(self, key):
+        """One keystroke while a command is being typed.
+
+        Case is preserved, unlike the task keys below: the value of P ssid is
+        a Wi-Fi name, and those are case-sensitive.
+        """
+        if key in (13, 10):                      # Enter sends
+            text, self.typing = self.typing, None
+            if text.strip():
+                self.send_command(text)
+        elif key == 27:                          # Esc abandons
+            self.typing = None
+        elif key in (8, 127):                    # Backspace
+            self.typing = self.typing[:-1]
+        elif 32 <= key < 127 and len(self.typing) < COMMAND_MAX:
+            self.typing += chr(key)
+
+    def send_command(self, text: str):
+        text = text.strip()
+        if not text:
+            return
+        # R is reset-everything: neutral, the three trims and fsMs go with the
+        # Wi-Fi settings. One keystroke away from the command line is too
+        # close for that, and the trims were calibrated on a bench.
+        if text.upper().startswith("R") and (len(text) == 1 or text[1] == " "):
+            self.reply = ("R disabled - it wipes trims and neutral too", RED)
+            print("R refused: it resets every parameter, not just the Wi-Fi")
+            return
+        try:
+            self.board.send_raw(text + "\n")
+        except Exception as exc:
+            self.reply = (f"send failed: {exc}", RED)
 
     # ---- task switching -----------------------------------------------
     def _switch(self, task_cls):
@@ -896,8 +997,23 @@ class Console:
         if self.camera.lost:
             _, py, _, ph = draw_panel(img, 16, py + ph + 4, [("NO CAMERA", RED)],
                                       anchor="tl", fs=0.5)
-        draw_panel(img, 16, py + ph + 4, [(f"{self.fps:4.1f} fps", GREY)],
-                   anchor="tl", fs=0.42, pad=6)
+        _, py, _, ph = draw_panel(img, 16, py + ph + 4,
+                                  [(f"{self.fps:4.1f} fps", GREY)],
+                                  anchor="tl", fs=0.42, pad=6)
+
+        # Whatever is being typed, or the board's answer to the last command.
+        # It sits in this stack rather than over the picture: it is status, and
+        # it must not cover the thing the operator is steering by.
+        if self.typing is not None:
+            # Keep the tail while typing: the cursor is where you are looking.
+            shown = fit_text(self.typing, img, 0.5, keep_head=False)
+            draw_panel(img, 16, py + ph + 4, [(f"> {shown}_", WHITE)],
+                       anchor="tl", fs=0.5)
+        elif self.reply is not None:
+            # Keep the head: OK or ERR is the part that says whether it worked.
+            draw_panel(img, 16, py + ph + 4,
+                       [(fit_text(self.reply[0], img, 0.5), self.reply[1])],
+                       anchor="tl", fs=0.5)
 
 
     def _draw_motors(self, img, telem):
@@ -1079,17 +1195,8 @@ class Console:
                     cv2.imshow(MASKS_WINDOW, np.hstack(list(
                         masks(self.last_frame, self.color.ranges).values())))
 
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):
+                if not self._key(cv2.waitKey(1) & 0xFF):
                     break
-                if 32 <= key < 127:
-                    ch = chr(key).lower()
-                    if ch == "s":
-                        # Saving works the same in every task, so it does not
-                        # belong to any one of them.
-                        self.snapshot(self.task.view(self, self.last_frame))
-                    else:
-                        self.task.on_key(ch, self)
         except KeyboardInterrupt:
             pass
         finally:
