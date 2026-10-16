@@ -192,6 +192,22 @@ def list_cameras(limit=CAMERA_SCAN_LIMIT) -> int:
     return 0
 
 
+def upright(frame):
+    """Turn a frame the right way up.
+
+    The camera is mounted upside down on the ROV, so every frame arrives
+    rotated 180 degrees.
+
+    Doing it here, on the raw frame as it comes off the device, is the only
+    place that stays correct. Everything downstream is then working in the
+    space the operator sees: the OSD is drawn on the corrected picture, and
+    the pointer position reported by the window refers to the same pixels the
+    colour task samples. Correcting anywhere later would put the crosshair on
+    one side of the pool and the sample it reads on the other.
+    """
+    return cv2.rotate(frame, cv2.ROTATE_180)
+
+
 class Camera:
     """Camera, read on a background thread.
 
@@ -287,7 +303,8 @@ class Camera:
             if ok and frame is not None:
                 # A fresh array each read, so publishing it needs no lock:
                 # the worker never writes into a frame it has handed over.
-                self._frame = frame
+                # upright() returns a new array too, so that still holds.
+                self._frame = upright(frame)
                 self._misses = 0
                 self.lost = False
             else:

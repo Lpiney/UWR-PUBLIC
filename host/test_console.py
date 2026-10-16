@@ -9,9 +9,13 @@ happens on RB. That is easy to break by accident when adding a task.
 import time
 from unittest import TestCase
 
+import cv2
+import numpy as np
+
 from console import (BTN_APRILTAG, BTN_CAPTURE, Console, Pad, Task,
-                     TaskAprilTag, TaskColor, vertical_label)
+                     TaskAprilTag, TaskColor, upright, vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
+from vision.color import DEFAULT_RANGES, sample_at
 from vision.test_apriltag import frame_with_tags
 from vision.test_color import scene as colour_scene
 
@@ -341,6 +345,32 @@ class ConsoleTaskTests(TestCase):
                          ["C", "1 2 3", "R", "D"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
+
+
+class UprightTests(TestCase):
+    """The camera is mounted upside down on the ROV, so every frame is
+    rotated 180 degrees as it comes off the device."""
+
+    def test_a_frame_comes_out_rotated(self):
+        frame = np.zeros((4, 6, 3), np.uint8)
+        frame[0, 0] = (10, 20, 30)              # top-left
+        frame[0, 5] = (40, 50, 60)              # top-right
+        out = upright(frame)
+        self.assertEqual(out.shape, frame.shape)
+        np.testing.assert_array_equal(out[3, 5], (10, 20, 30))
+        np.testing.assert_array_equal(out[3, 0], (40, 50, 60))
+
+    def test_the_pointer_and_the_sample_share_one_space(self):
+        """Flipping the raw frame inside Camera is what keeps the crosshair
+        and the sampled patch in the same coordinates. Flip anywhere later and
+        the operator aims at one corner while the colour task reads the
+        opposite one - which still looks like an answer."""
+        raw = np.full((480, 640, 3), (40, 40, 40), np.uint8)
+        cv2.rectangle(raw, (40, 30), (80, 90), (0, 0, 240), -1)   # red, top-left
+        fixed = upright(raw)
+
+        self.assertIsNone(sample_at(fixed, 60, 60, DEFAULT_RANGES))
+        self.assertEqual(sample_at(fixed, 580, 420, DEFAULT_RANGES), "R")
 
 
 class LostCameraTests(TestCase):
