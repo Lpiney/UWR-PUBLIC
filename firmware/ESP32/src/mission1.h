@@ -4,7 +4,9 @@
 //  The task rules require the Wi-Fi association and the fetch to be performed
 //  by the MCU on the ROV itself. Data obtained through a laptop, a phone or a
 //  browser scores nothing. The retrieved text has to be displayable to the
-//  referee. SSID is UR_Field, password 12345678, and the tower URL is only
+//  referee. The SSID, password and tower URL are announced to the teams before
+//  the contest and set at runtime with P ssid / P pass / P url - this file is
+//  in a public repository and carries none of them. The tower URL is only
 //  published on the day.
 //
 //  Everything network-related runs in its own FreeRTOS task on core 0.
@@ -152,12 +154,19 @@ inline void task(void *) {
     // ---- 1. connect on request ----
     if (reqConnect()) {
       reqConnect() = false;
-      WiFi.mode(WIFI_STA);
-      WiFi.setSleep(false);          // no power save: lower round-trip latency
-      WiFi.begin(p.ssid.c_str(), p.pass.c_str());
-      wifiState() = 1;
-      nextRetry = millis() + p.wifiRetryMs;
-      post("EV", "wifi: connecting to " + p.ssid);
+      if (p.ssid.length() == 0) {
+        // Nothing compiled in and nothing set. Say so once rather than sit in
+        // CONNECTING for ever: P ssid and P pass reconnect by themselves.
+        wifiState() = 0;
+        post("EV", "wifi: no SSID set - send  P ssid <name>  then  P pass <password>");
+      } else {
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false);        // no power save: lower round-trip latency
+        WiFi.begin(p.ssid.c_str(), p.pass.c_str());
+        wifiState() = 1;
+        nextRetry = millis() + p.wifiRetryMs;
+        post("EV", "wifi: connecting to " + p.ssid);
+      }
     }
 
     // ---- 2. maintain the association ----
@@ -176,9 +185,11 @@ inline void task(void *) {
         post("EV", "wifi: disconnected");
       }
       if ((int32_t)(millis() - nextRetry) >= 0) {
-        WiFi.disconnect();
-        WiFi.begin(p.ssid.c_str(), p.pass.c_str());
         nextRetry = millis() + p.wifiRetryMs;
+        if (p.ssid.length()) {       // an unset SSID is not worth retrying
+          WiFi.disconnect();
+          WiFi.begin(p.ssid.c_str(), p.pass.c_str());
+        }
       }
     }
 

@@ -20,8 +20,14 @@
 namespace params {
 
 struct Data {
-  String ssid        = "UR_Field";        // given in the competition manual, public
-  String pass        = "12345678";        // same
+  // Empty on purpose. The contest credentials are handed to the teams shortly
+  // before the day, and this repository is public, so they are set once with
+  //   P ssid <name>      P pass <password>
+  // and then live in NVS, where a reflash does not disturb them. A board that
+  // has never been configured reports wifi=NO_SSID, which is the honest answer
+  // - better than carrying a stale name from a previous event.
+  String ssid        = "";
+  String pass        = "";
   String url         = "";                // tower URL, published on the day:
                                           //   P url http://192.168.4.1/xxx
   int    neutral     = ESC_US_NEUTRAL;    // ESC neutral pulse width
@@ -112,7 +118,9 @@ inline void begin() {
 // partition, so it survives a power cycle and a reflash. Testing on a home
 // network leaves the board trying to join that network on competition day,
 // which costs the whole of Mission 1 and is very hard to spot on site.
-// Send R on power-up to get back to UR_Field / 12345678.
+//
+// Wiping the credentials leaves them empty, not pre-filled - the contest ones
+// are not in this repository. Set them again with P ssid / P pass.
 inline void reset() {
   Guard g;
   nvs().clear();

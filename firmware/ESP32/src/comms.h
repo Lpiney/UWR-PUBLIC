@@ -166,6 +166,12 @@ inline void handle(const String &raw) {
     String v = arg.substring(sp2 + 1); v.trim();
     if (!params::set(k, v)) { err("unknown parameter: " + k); return; }
     thrusters::syncParams();   // neutral may have changed; take effect at once
+
+    // Changing the network obviously means reconnecting to it. Without this
+    // the operator types P ssid, gets an OK, and nothing happens - which
+    // looks like the command was ignored.
+    if (k == "ssid" || k == "pass") mission1::reqConnect() = true;
+
     ok("P " + k + " = " + params::get(k));
     return;
   }
