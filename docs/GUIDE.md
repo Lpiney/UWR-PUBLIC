@@ -351,8 +351,9 @@ python3 host/console.py --camera 1
 板子到了場地會悶頭去連家裡那個網路，連不上就是 Mission 1 直接零分，而且現場幾乎
 想不到是這個原因。
 
-> **編譯進去的預設值是空的。** Wi-Fi 名稱和密碼由大會公布，而 `UWR-CODE` 是**公開**
-> 倉庫，所以不寫進原始碼。用 `P ssid` / `P pass` 設一次，之後存在 NVS。
+> **比賽的 Wi-Fi 已經編譯在裡面**（`params.h`）：`CityUHK_UR_Fall-Training` /
+> `UnderwaterRobotic2026`。這是大會發給所有隊伍的共享憑證，不是私人秘密，所以公開
+> 放在倉庫裡。**要改就 `P ssid` / `P pass`**，會存進 NVS 蓋掉預設值。
 
 > ⚠️ **不要用 `R` 來清。** 它不只清 Wi-Fi——`neutral`、`trimL`、`trimR`、`trimV`、
 > `fsMs` 會一起打回預設值，實驗室校準過的配平就沒了。要改哪一項就 `P` 哪一項。

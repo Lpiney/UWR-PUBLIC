@@ -305,8 +305,9 @@ pio run -d firmware\ESP32 -t upload --upload-port COM5
 帶著實驗室的設定到場地，板子會悶頭去連那個網路，連不上就是 Mission 1 直接零分，
 而且現場幾乎想不到是這個原因。
 
-> **編譯進去的預設值是空的。** Wi-Fi 名稱和密碼由大會公布，而這個倉庫是**公開**的，
-> 所以不放在原始碼裡。用 `P ssid` / `P pass` 設一次，之後存在 NVS。
+> **比賽的 Wi-Fi 已經編譯在裡面**（`params.h`）：`CityUHK_UR_Fall-Training` /
+> `UnderwaterRobotic2026`。這是大會發給所有隊伍的共享憑證，不是私人秘密，所以公開
+> 放在倉庫裡。**要改就 `P ssid` / `P pass`**，會存進 NVS 蓋掉預設值。
 
 > ⚠️ **不要用 `R` 來清。** `R` 是「恢復全部預設值」，它不只知道 Wi-Fi——
 > `neutral`、`trimL/R/V`、`fsMs` 全部一起打回預設。實驗室校準過的配平會消失。

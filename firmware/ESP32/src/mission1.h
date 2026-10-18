@@ -4,9 +4,8 @@
 //  The task rules require the Wi-Fi association and the fetch to be performed
 //  by the MCU on the ROV itself. Data obtained through a laptop, a phone or a
 //  browser scores nothing. The retrieved text has to be displayable to the
-//  referee. The SSID, password and tower URL are announced to the teams before
-//  the contest and set at runtime with P ssid / P pass / P url - this file is
-//  in a public repository and carries none of them. The tower URL is only
+//  referee. The SSID and password are compiled into params.h; the tower URL is
+//  released on the day and set with P url. The tower URL is only
 //  published on the day.
 //
 //  Everything network-related runs in its own FreeRTOS task on core 0.

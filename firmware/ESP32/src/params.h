@@ -20,14 +20,17 @@
 namespace params {
 
 struct Data {
-  // Empty on purpose. The contest credentials are handed to the teams shortly
-  // before the day, and this repository is public, so they are set once with
-  //   P ssid <name>      P pass <password>
-  // and then live in NVS, where a reflash does not disturb them. A board that
-  // has never been configured reports wifi=NO_SSID, which is the honest answer
-  // - better than carrying a stale name from a previous event.
-  String ssid        = "";
-  String pass        = "";
+  // The contest Wi-Fi, as released to every team before the event.
+  //
+  // Published here on purpose. This is a shared event credential, not a
+  // personal secret: every team has it, the access point broadcasts the name
+  // anyway, and it is worthless after the contest. The repository owner
+  // decided it should be compiled in, and it is - so a board whose settings
+  // were wiped still joins the right network instead of a stale one.
+  //
+  // The tower's address is not here: the IP is only released on the day.
+  String ssid        = "CityUHK_UR_Fall-Training";
+  String pass        = "UnderwaterRobotic2026";
   String url         = "";                // tower URL, published on the day:
                                           //   P url http://192.168.4.1/xxx
   int    neutral     = ESC_US_NEUTRAL;    // ESC neutral pulse width
@@ -119,8 +122,8 @@ inline void begin() {
 // network leaves the board trying to join that network on competition day,
 // which costs the whole of Mission 1 and is very hard to spot on site.
 //
-// Wiping the credentials leaves them empty, not pre-filled - the contest ones
-// are not in this repository. Set them again with P ssid / P pass.
+// Wiping goes back to the contest Wi-Fi compiled in above. Their address is
+// not compiled in, so P url still has to be typed again afterwards.
 inline void reset() {
   Guard g;
   nvs().clear();
