@@ -219,14 +219,32 @@ inline void task(void *) {
       // to tell a slow scan from a command that never landed.
       post("NET", "BEGIN");
 
-      // WIFI_SCAN_RUNNING means the station is already scanning - usually
-      // looking for the configured AP during a connect attempt. Wait for that
-      // one to finish instead of reporting a failure the operator cannot act
-      // on. Any other negative value is a real error and is reported as is.
+      // A connection attempt leaves the driver busy - connecting, or scanning
+      // for the configured AP - and esp_wifi_scan_start is refused while it
+      // is. That is where WIFI_SCAN_FAILED came from: the board was retrying
+      // an access point that is not there, so it was always busy. Stop the
+      // attempt, scan, then rebuild it below.
+      const bool wasBusy = (WiFi.status() != WL_CONNECTED);
+      if (wasBusy) {
+        WiFi.disconnect();
+        vTaskDelay(pdMS_TO_TICKS(150));
+      }
+
       int n = WiFi.scanNetworks();
       for (int tries = 0; n == WIFI_SCAN_RUNNING && tries < 6; ++tries) {
         vTaskDelay(pdMS_TO_TICKS(300));
         n = WiFi.scanNetworks();
+      }
+      if (n < 0) {
+        // The count alone cannot say which of the two failures it was. Carry
+        // the radio's own status alongside it.
+        post("EV", "scan failed: code " + String(n) +
+                   " wifi=" + String((int)WiFi.status()));
+      }
+      if (wasBusy && p.ssid.length()) {
+        WiFi.begin(p.ssid.c_str(), p.pass.c_str());
+        wifiState() = 1;
+        nextRetry = millis() + p.wifiRetryMs;
       }
 
       for (int i = 0; i < n && i < M1_SCAN_MAX; ++i) {

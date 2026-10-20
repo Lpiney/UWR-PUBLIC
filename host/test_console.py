@@ -619,6 +619,20 @@ class EvidenceTests(TestCase):
         self.run_capture_window()
         self.assertEqual(self.saved, ["apriltag"])
 
+    def test_the_saved_tag_picture_carries_the_boxes_and_ids(self):
+        """The boxes are drawn only while the capture window is open, and it
+        closes on the same tick the result lands. Without stamping them back
+        on, the picture proves the answer but not which tag it came from."""
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.con.task.capture(self.con)
+        self.run_capture_window()
+        plain = self.frame.copy()
+        stamped = plain.copy()
+        self.con.task.stamp_evidence(self.con, stamped)
+        self.assertGreater(int(np.abs(stamped.astype(int)
+                                     - plain.astype(int)).sum()), 0)
+
     def test_a_capture_that_sees_nothing_saves_nothing(self):
         """No result means nothing to show a referee later."""
         self.con._switch(TaskAprilTag)

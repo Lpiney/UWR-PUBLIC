@@ -586,6 +586,14 @@ class Task:
         """
         return 0
 
+    def stamp_evidence(self, ctx, frame) -> None:
+        """Draw on the copy being saved, in place.
+
+        For anything the live picture only shows transiently - a box drawn
+        while a capture window is open, say - and that should still be on the
+        picture kept afterwards.
+        """
+
 
 class TaskAprilTag(Task):
     """Mission 2.1: identify the tags, then report the largest or smallest ID.
@@ -665,6 +673,14 @@ class TaskAprilTag(Task):
         # One per capture that actually confirmed something. A press that saw
         # nothing produces no result, so there is nothing to keep as evidence.
         return self.captures
+
+    def stamp_evidence(self, ctx, frame):
+        # The boxes and their ID numbers are drawn only while the capture
+        # window is open, and it closes on the same tick the result lands. The
+        # sightings survive until the next capture, so they can be drawn once
+        # more onto the copy being saved - which is the whole point of the
+        # picture: proof of which tag was read and where it was.
+        ctx.apriltag.annotate(frame)
 
     @property
     def result(self):
@@ -1307,7 +1323,9 @@ class Console:
         seq = self.task.evidence_seq()
         if seq and seq != self._evidence:
             self._evidence = seq
-            self.snapshot(img, self.task.name.lower())
+            shot = img.copy()
+            self.task.stamp_evidence(self, shot)
+            self.snapshot(shot, self.task.name.lower())
 
     def render(self, telem, en, frame=None):
         """Produce one finished OSD frame. `frame` overrides the camera, which
