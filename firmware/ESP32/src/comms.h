@@ -84,6 +84,7 @@ inline void ok(const String &m)    { emit("OK", m); }
 inline void err(const String &m)   { emit("ERR", m); }
 inline void event(const String &m) { emit("EV", m); }
 inline void data(const String &m)  { emit("DATA", m); }
+inline void net(const String &m)   { emit("NET", m); }
 
 // ---------------------------------------------------------------------------
 //  CMD parsing

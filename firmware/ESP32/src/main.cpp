@@ -94,8 +94,12 @@ static void drainMission1() {
 
   mission1::Ev e;
   while (xQueueReceive(mission1::q(), &e, 0) == pdTRUE) {
-    if (strcmp(e.tag, "DATA") == 0) comms::data(String(e.msg));
-    else                            comms::event(String(e.msg));
+    // The tag decides the line prefix. Everything that is not DATA or NET is
+    // an event; NET must keep its own tag or the console cannot tell a scan
+    // result from a Wi-Fi problem report.
+    if      (strcmp(e.tag, "DATA") == 0) comms::data(String(e.msg));
+    else if (strcmp(e.tag, "NET")  == 0) comms::net(String(e.msg));
+    else                                 comms::event(String(e.msg));
   }
 }
 
