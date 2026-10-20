@@ -25,6 +25,7 @@
 #include "thrusters.h"
 #include "mission1.h"
 #include "comms.h"
+#include "diagnostics.h"
 
 // ---------------------------------------------------------------------------
 //  Mixer: normalised stick position -> left and right pulse widths.
@@ -113,10 +114,11 @@ void setup() {
 
   params::begin();      // parameters first; other modules depend on them
   thrusters::begin();   // put neutral on the ESCs immediately
+  diagnostics::begin();
   mission1::begin();    // start the network task on core 0
   comms::begin();
 
-  comms::event("UWR ROV firmware ready");
+  comms::event("UWR ROV firmware ready: " FIRMWARE_VARIANT);
   comms::event("commands: CMD nx= ny= en= | P/G/R=params | W/F=mission1 | S=status | B=reboot");
   comms::event("boot window " + String(BOOT_IGNORE_MS) +
                " ms; link timeout " + String(params::d().fsMs) + " ms");
@@ -124,9 +126,8 @@ void setup() {
 }
 
 void loop() {
-  const uint32_t now = millis();
-
   comms::poll();          // receive commands, parse, reply
+  const uint32_t now = millis();  // command timestamps may change in poll()
 
   // ---- mixer ----
   // Two gates, both required to drive: the link must be alive, and the
@@ -147,11 +148,12 @@ void loop() {
   }
 
   // ---- motor update, fixed 8 ms tick ----
-  static uint32_t lastControl = 0;
-  if ((int32_t)(now - lastControl) >= CONTROL_MS) {
-    const float dtMs = (float)(now - lastControl);
+  static uint32_t lastControl = now;
+  const uint32_t elapsed = now - lastControl;
+  if (elapsed >= CONTROL_MS) {
     lastControl = now;
-    thrusters::update(dtMs);
+    diagnostics::noteControlGap(elapsed);
+    thrusters::update((float)elapsed);
   }
 
   drainMission1();          // report network events upstream

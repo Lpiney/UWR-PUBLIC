@@ -4,6 +4,8 @@
 // ============================================================================
 #pragma once
 
+#define FIRMWARE_VARIANT "reversal-protection-v1"
+
 // ---------------------------------------------------------------------------
 //  Thruster pins
 //
@@ -59,10 +61,14 @@
 // gives the ESCs time to finish and the operator time to let go.
 #define BOOT_IGNORE_MS 3000
 
-// Throttle slew limit: maximum change in pulse width per millisecond.
-// A full 1000 us sweep takes 500 ms, so the motors never jump straight to
-// full throttle. Raise it for a snappier feel, lower it to be gentler.
+// Normal driving: 1000 ms from neutral to either full-throttle endpoint.
+// Slow both acceleration and deceleration to reduce DC-DC load transients.
+#define DRIVE_SLEW_US_PER_MS 0.5f
+// Keep the original stop rate for a lost link or locked safety key.
 #define SLEW_US_PER_MS 2.0f
+// Hold neutral before changing sign. One extra 50 Hz frame allows for the
+// phase of the first neutral pulse; this is not a rotor-stop measurement.
+#define REVERSE_NEUTRAL_MS 520
 
 // ---------------------------------------------------------------------------
 //  Input shaping
@@ -90,6 +96,8 @@
 // ---------------------------------------------------------------------------
 //  Loop timing
 // ---------------------------------------------------------------------------
+#define CONTROL_MAX_DT_MS 8  // never catch up with one large throttle step
+#define CONTROL_STALL_MS 40  // diagnostic only
 #define CONTROL_MS   8      // motor control tick, ~125 Hz (has to feel responsive)
 #define TELEMETRY_MS 50     // telemetry line, ~20 Hz
 #define STATUS_MS    500    // Mission 1 status line, ~2 Hz

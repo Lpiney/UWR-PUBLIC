@@ -40,6 +40,7 @@
 #include "params.h"
 #include "thrusters.h"
 #include "mission1.h"
+#include "diagnostics.h"
 
 // The namespace cannot be called "link": POSIX <unistd.h> already declares
 // int link(...) and the collision is a hard compile error.
@@ -66,7 +67,7 @@ inline String statusLine();
 // True while a drive command is arriving fast enough to be trusted.
 inline bool linkOk(uint32_t now) {
   const Command &c = cmd();
-  return c.lastCmdMs != 0 && (int32_t)(now - c.lastCmdMs) < params::d().fsMs;
+  return c.lastCmdMs != 0 && (uint32_t)(now - c.lastCmdMs) < (uint32_t)params::d().fsMs;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,10 +239,16 @@ inline void poll() {
 
 inline String statusLine() {
   const thrusters::State &t = thrusters::st();
-  return String("state=") + thrusters::stateName() +
+  return String("firmware=" FIRMWARE_VARIANT " state=") + thrusters::stateName() +
          " outL="  + String(t.outL) +
          " outR="  + String(t.outR) +
          " outV="  + String(t.outV) +
+         " boot=" + String(diagnostics::st().bootId, HEX) +
+         " uptime=" + String(millis()) +
+         " reset=" + diagnostics::resetName() +
+         " max_dt=" + String(diagnostics::st().maxControlMs) +
+         " stalls=" + String(diagnostics::st().stalls) +
+         " reverse=" + String(thrusters::reverseMask()) +
          " enc="   + String(cmd().enable ? 1 : 0) +
          " link="  + String(linkOk(millis()) ? 1 : 0) +
          " wifi="  + mission1::wifiStateName() +
