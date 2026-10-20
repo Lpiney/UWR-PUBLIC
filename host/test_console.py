@@ -14,7 +14,7 @@ import numpy as np
 
 from console import (AMBER, BTN_APRILTAG, BTN_CAPTURE, COMMAND_MAX, GREEN, RED,
                      Console, Pad, Task, TaskAprilTag, TaskColor, TaskWifi,
-                     _text_wh, fit_text, throttle_frac, upright,
+                     _text_wh, fit_text, motor_rows, throttle_frac, upright,
                      vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.color import DEFAULT_RANGES, sample_at
@@ -610,6 +610,30 @@ class ThrottlePanelTests(TestCase):
     def test_values_outside_the_range_are_clamped(self):
         self.assertEqual(throttle_frac(2500), 1.0)
         self.assertEqual(throttle_frac(500), -1.0)
+
+    def rows(self, l_us, r_us, z=0.0):
+        t = telemetry()
+        t.l_us, t.r_us, t.z = l_us, r_us, z
+        return [(name, round(value * 100)) for name, value, _ in motor_rows(t)]
+
+    def test_driving_straight_shows_both_thrusters_ahead(self):
+        """Measured on the vehicle: L 2000 / R 1000 drives it straight ahead.
+        The thrusters are mounted anti-parallel, so the right one's "ahead" is
+        the low end of its range. Shown raw this would read as one full ahead
+        and one full astern - which is not what the ROV is doing."""
+        self.assertEqual(self.rows(2000, 1000)[:2], [("L", 100), ("R", 100)])
+        self.assertEqual(self.rows(1000, 2000)[:2], [("L", -100), ("R", -100)])
+
+    def test_a_spin_shows_the_thrusters_pointing_opposite_ways(self):
+        self.assertEqual(self.rows(2000, 2000)[:2], [("L", 100), ("R", -100)])
+        self.assertEqual(self.rows(1000, 1000)[:2], [("L", -100), ("R", 100)])
+
+    def test_neutral_is_zero_on_both(self):
+        self.assertEqual(self.rows(1500, 1500)[:2], [("L", 0), ("R", 0)])
+
+    def test_the_vertical_row_reads_up_and_down(self):
+        self.assertEqual(self.rows(1500, 1500, z=1.0)[2], ("UP", 100))
+        self.assertEqual(self.rows(1500, 1500, z=-0.6)[2], ("DOWN", -60))
 
     def test_the_panel_draws_for_a_live_telemetry_frame(self):
         con = make_console()

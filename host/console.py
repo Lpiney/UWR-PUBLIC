@@ -469,6 +469,25 @@ def throttle_frac(us: int) -> float:
     return max(-1.0, min(1.0, (us - PULSE_NEUTRAL) / float(half)))
 
 
+def motor_rows(telem) -> list:
+    """The three throttle rows, as (label, signed value, how to write it).
+
+    The right thruster is negated. The two are mounted anti-parallel (see the
+    mixer in main.cpp), so its "forward" is the low end of its pulse range:
+    L 2000 / R 1000 drives the ROV straight ahead. Showing that raw reads as
+    one thruster full ahead and one full astern, when the vehicle is doing
+    neither. Negated, "+" on every row means "this thruster drives the ROV
+    forward", and a spin shows as the two rows pointing opposite ways.
+
+    The vertical row takes the commanded vz rather than its pulse, for the
+    same reason: that thruster is inverted as well, and vz already means
+    "positive is up".
+    """
+    return [("L", throttle_frac(telem.l_us), "signed"),
+            ("R", -throttle_frac(telem.r_us), "signed"),
+            (vertical_label(telem.z), telem.z, "magnitude")]
+
+
 # ===========================================================================
 #  Tasks
 # ===========================================================================
@@ -1145,11 +1164,7 @@ class Console:
             return
 
         fs, pad, gap = 0.5, 9, 6
-        # (label, signed value, how the number is written)
-        vertical = vertical_label(telem.z)
-        rows = [("L", throttle_frac(telem.l_us), "signed"),
-                ("R", throttle_frac(telem.r_us), "signed"),
-                (vertical, telem.z, "magnitude")]
+        rows = motor_rows(telem)
 
         label_w, label_h = _text_wh(f"{'DOWN':<4}{'+100%':>7}", fs)
         line_h = label_h + gap
