@@ -936,6 +936,11 @@ class TaskWifi(Task):
                     sorted(m["nets"], key=lambda n: -n[0])[:NETS_SHOWN]):
                 label = "nets  " if i == 0 else "      "
                 lines.append((f"{label}{rssi:>5} ch{channel:<3} {ssid}", WHITE))
+            if m["scan_count"] and m["scan_count"] > len(m["nets"]):
+                # A campus scan finds dozens. Saying how many were left out
+                # stops the list reading as if it were everything.
+                lines.append((f"      +{m['scan_count'] - len(m['nets'])} weaker"
+                              f" not listed", GREY))
         elif m["scan_count"] is not None and m["scan_count"] <= 0:
             # The scan finished and found nothing, or the radio refused it.
             # Saying so matters: falling back to DATA hides the answer to the

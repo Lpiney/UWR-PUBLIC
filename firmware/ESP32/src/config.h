@@ -114,10 +114,10 @@
 #define M1_TASK_CORE  0           // network task is pinned to core 0 so the
                                   // control loop keeps core 1 to itself
 
-// How many networks a scan reports. A scan in a hall full of phones can find
-// thirty; the panel can show a handful, and every one posted is a queue slot
+// How many networks a scan reports, after sorting by signal. A campus scan
+// found 72; the panel shows a handful, and every one posted is a queue slot
 // taken from the Wi-Fi and HTTP events happening at the same time.
-#define M1_SCAN_MAX   10
+#define M1_SCAN_MAX   12
 
 // Events the control loop has not collected yet. Must cover one whole scan
 // (BEGIN + M1_SCAN_MAX + END) arriving between two drains, or the tail of the

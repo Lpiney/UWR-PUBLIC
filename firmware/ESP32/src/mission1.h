@@ -247,11 +247,39 @@ inline void task(void *) {
         nextRetry = millis() + p.wifiRetryMs;
       }
 
-      for (int i = 0; i < n && i < M1_SCAN_MAX; ++i) {
+      // Report the strongest M1_SCAN_MAX, not the first found. A scan comes
+      // back in channel order, so taking the first few can miss the access
+      // point the operator is looking for entirely - on a campus there were
+      // 72 networks, and the ones that mattered were scattered through them.
+      struct Net { int rssi; int ch; String ssid; };
+      Net best[M1_SCAN_MAX];
+      int have = 0;
+      for (int i = 0; i < n; ++i) {
+        Net cand;
+        cand.rssi = WiFi.RSSI(i);
+        cand.ch   = WiFi.channel(i);
+        cand.ssid = WiFi.SSID(i).length() ? WiFi.SSID(i) : String("<hidden>");
+        if (have < M1_SCAN_MAX) {
+          best[have++] = cand;
+        } else {
+          int weakest = 0;
+          for (int k = 1; k < have; ++k) {
+            if (best[k].rssi < best[weakest].rssi) weakest = k;
+          }
+          if (cand.rssi > best[weakest].rssi) best[weakest] = cand;
+        }
+      }
+      for (int a = 1; a < have; ++a) {        // insertion sort, strongest first
+        Net key = best[a];
+        int b = a - 1;
+        while (b >= 0 && best[b].rssi < key.rssi) { best[b + 1] = best[b]; --b; }
+        best[b + 1] = key;
+      }
+      for (int i = 0; i < have; ++i) {
         // SSID last: it may contain spaces, and the reader takes the rest of
         // the line for it.
-        post("NET", String(WiFi.RSSI(i)) + " " + String(WiFi.channel(i)) + " " +
-                    (WiFi.SSID(i).length() ? WiFi.SSID(i) : String("<hidden>")));
+        post("NET", String(best[i].rssi) + " " + String(best[i].ch) + " " +
+                    best[i].ssid);
       }
       post("NET", String(n) + " END");
       WiFi.scanDelete();
