@@ -592,6 +592,69 @@ class WifiPanelTests(TestCase):
         self.assertEqual(out.shape, frame.shape)
 
 
+class EvidenceTests(TestCase):
+    """Every capture that produces a result leaves a picture behind.
+
+    The picture is the finished OSD, not the camera view: the point of keeping
+    it is that it carries the panel the referee reads."""
+
+    def setUp(self):
+        self.con = make_console()
+        self.saved = []
+        self.con.snapshot = lambda img, label="rov": self.saved.append(label)
+        self.frame = frame_with_tags(7)
+
+    def run_capture_window(self, frame=None):
+        frame = self.frame if frame is None else frame
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            self.con.render(telemetry(), True, frame=frame.copy())
+            time.sleep(1 / 60)
+        self.con._save_evidence(self.frame)
+
+    def test_a_confirmed_tag_capture_saves_one_picture(self):
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.con.task.capture(self.con)
+        self.run_capture_window()
+        self.assertEqual(self.saved, ["apriltag"])
+
+    def test_a_capture_that_sees_nothing_saves_nothing(self):
+        """No result means nothing to show a referee later."""
+        self.con._switch(TaskAprilTag)
+        self.con.task.on_key("l", self.con)
+        self.con.task.capture(self.con)
+        self.run_capture_window(self.frame * 0 + 128)
+        self.assertEqual(self.saved, [])
+
+    def test_a_colour_answer_saves_one_picture(self):
+        self.con._switch(TaskColor)
+        self.con.render(telemetry(), True, frame=colour_scene("R"))
+        self.con.mouse.x, self.con.mouse.y = 320, 225
+        self.con.task.capture(self.con)
+        self.con._save_evidence(self.frame)
+        self.assertEqual(self.saved, ["colour"])
+
+    def test_the_same_result_is_not_saved_twice(self):
+        self.con._switch(TaskColor)
+        self.con.render(telemetry(), True, frame=colour_scene("R"))
+        self.con.mouse.x, self.con.mouse.y = 320, 225
+        self.con.task.capture(self.con)
+        for _ in range(5):
+            self.con._save_evidence(self.frame)
+        self.assertEqual(self.saved, ["colour"])
+
+    def test_a_second_capture_saves_a_second_picture(self):
+        self.con._switch(TaskColor)
+        self.con.render(telemetry(), True, frame=colour_scene("R"))
+        self.con.mouse.x, self.con.mouse.y = 320, 225
+        self.con.task.capture(self.con)
+        self.con._save_evidence(self.frame)
+        self.con.task.capture(self.con)
+        self.con._save_evidence(self.frame)
+        self.assertEqual(self.saved, ["colour", "colour"])
+
+
 class ThrottlePanelTests(TestCase):
     """The panel shows throttle, not pulse width: 1718 is what the ESC is
     given, -36% is what the operator can act on."""

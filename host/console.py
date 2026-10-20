@@ -565,10 +565,7 @@ class Task:
         return False
 
     def keys(self, ctx) -> list:
-        """Keyboard shortcuts for this task, as (key, what it does) pairs.
-
-        S is handled globally by the console, so it is not listed here.
-        """
+        """Keyboard shortcuts for this task, as (key, what it does) pairs."""
         return []
 
     def commands(self, ctx) -> list:
@@ -579,6 +576,15 @@ class Task:
     def capture(self, ctx) -> bool:
         """Recognize once, right now. False if this task has nothing to capture."""
         return False
+
+    def evidence_seq(self) -> int:
+        """A number that goes up when a capture has just produced a result.
+
+        The console saves the frame the moment it changes, so the picture kept
+        as evidence carries the answer the operator was shown - not the empty
+        preview from before they pressed the button.
+        """
+        return 0
 
 
 class TaskAprilTag(Task):
@@ -654,6 +660,11 @@ class TaskAprilTag(Task):
             self.captures += 1
         else:
             print("no tag confirmed in that capture - it did not count")
+
+    def evidence_seq(self):
+        # One per capture that actually confirmed something. A press that saw
+        # nothing produces no result, so there is nothing to keep as evidence.
+        return self.captures
 
     @property
     def result(self):
@@ -737,9 +748,13 @@ class TaskColor(Task):
 
     def __init__(self):
         self.answer = None          # colour from the last capture, or None
+        self.seq = 0                # bumps per answer, for the evidence shot
 
     def enter(self, ctx):
         self.answer = None
+
+    def evidence_seq(self):
+        return self.seq
 
     def leave(self, ctx):
         self.answer = None
@@ -754,6 +769,7 @@ class TaskColor(Task):
         if self.answer is None:
             print("nothing recognisable under the pointer - aim at bare pole")
         else:
+            self.seq += 1
             print(f"color recognition = {NAMES[self.answer]}")
         return True
 
@@ -909,7 +925,7 @@ class TaskWifi(Task):
             # Saying so matters: falling back to DATA hides the answer to the
             # question that was asked.
             why = ("0 found - nothing in range" if m["scan_count"] == 0
-                   else "scan failed")
+                   else f"scan failed ({m['scan_count']})")
             lines.append((f"nets  {why}", RED))
         elif m["data"]:
             # The whole string is shown, wrapped rather than cut: this is the
@@ -953,6 +969,7 @@ class Console:
         self.mouse = Mouse()
         self.typing = None          # the command being typed, or None
         self.reply = None           # (text, colour) from the board, or None
+        self._evidence = 0          # last result sequence saved as a picture
         board.on_line = self._on_board_line
 
     # ---- board events -------------------------------------------------
@@ -1026,11 +1043,7 @@ class Console:
             return False
         if 32 <= key < 127:
             ch = chr(key).lower()
-            if ch == "s":
-                # Saving works the same in every task, so it does not belong
-                # to any one of them.
-                self.snapshot(self.task.view(self, self.last_frame))
-            elif ch == "t":
+            if ch == "t":
                 self.start_typing()
             else:
                 self.task.on_key(ch, self)
@@ -1081,6 +1094,9 @@ class Console:
             new = task_cls()
         self.task.leave(self)
         self.task = new
+        # Each task counts its own results from zero, so start the saved-shot
+        # sequence from zero with it.
+        self._evidence = 0
         self.task.enter(self)
 
     @staticmethod
@@ -1247,7 +1263,7 @@ class Console:
         _, py, _, _ = draw_panel(img, img.shape[1] - 16, img.shape[0] - 16,
                                  lines, anchor="br", fs=0.5, title="PAD")
 
-        keys = [("Q Esc", "quit"), ("S", "save png")] + list(self.task.keys(self))
+        keys = [("Q Esc", "quit")] + list(self.task.keys(self))
         draw_panel(img, img.shape[1] - 16, py - 6, self._key_lines(keys),
                    anchor="br", fs=0.44, pad=7, title="KEYBOARD")
 
@@ -1264,14 +1280,34 @@ class Console:
                    anchor="bl", fs=0.5)
         self._draw_hints(img)
 
-    def snapshot(self, frame):
+    def snapshot(self, frame, label="rov"):
+        """Write one frame to host/snapshots/.
+
+        Milliseconds are in the name as well as seconds: two captures half a
+        second apart would otherwise overwrite each other, and the second one
+        is the one that matters.
+        """
         folder = pathlib.Path(__file__).resolve().parent / "snapshots"
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / time.strftime("rov-%Y%m%d-%H%M%S.png")
+        now = time.time()
+        stamp = (time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+                 + f"-{int(now * 1000) % 1000:03d}")
+        path = folder / f"{label}-{stamp}.png"
         if cv2.imwrite(str(path), frame):
             print(f"saved {path}")
         else:
             print(f"could not write {path}")
+
+    def _save_evidence(self, img):
+        """Keep the picture the operator was shown, once per new result.
+
+        The frame passed in is the finished OSD, not the camera view: the
+        point of keeping it is that it carries the panel the referee reads.
+        """
+        seq = self.task.evidence_seq()
+        if seq and seq != self._evidence:
+            self._evidence = seq
+            self.snapshot(img, self.task.name.lower())
 
     def render(self, telem, en, frame=None):
         """Produce one finished OSD frame. `frame` overrides the camera, which
@@ -1351,6 +1387,7 @@ class Console:
                           f"{self.board.port} is the right port.")
 
                 img = self.render(telem, en)
+                self._save_evidence(img)
 
                 self.frames += 1
                 if now - self._t_fps >= 0.5:

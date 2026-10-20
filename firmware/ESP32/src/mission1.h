@@ -145,6 +145,14 @@ inline void task(void *) {
   uint32_t nextRetry = 0;
   uint32_t nextPoll  = 0;
 
+  // Bring the radio up once, regardless of whether an SSID is configured.
+  // WiFi.mode() used to be called only inside the connect branch, so a board
+  // with no network set had the WiFi driver uninitialised - and a scan then
+  // fails with WIFI_SCAN_FAILED, which is exactly when an operator reaches
+  // for the scan command.
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);            // no power save: lower round-trip latency
+
   for (;;) {
     // A P command can rewrite these at any moment, so take one locked copy at
     // the top of the loop and never touch the globals again.
@@ -210,7 +218,17 @@ inline void task(void *) {
       // nothing at all until the whole list arrived in one burst, with no way
       // to tell a slow scan from a command that never landed.
       post("NET", "BEGIN");
-      const int n = WiFi.scanNetworks();
+
+      // WIFI_SCAN_RUNNING means the station is already scanning - usually
+      // looking for the configured AP during a connect attempt. Wait for that
+      // one to finish instead of reporting a failure the operator cannot act
+      // on. Any other negative value is a real error and is reported as is.
+      int n = WiFi.scanNetworks();
+      for (int tries = 0; n == WIFI_SCAN_RUNNING && tries < 6; ++tries) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        n = WiFi.scanNetworks();
+      }
+
       for (int i = 0; i < n && i < M1_SCAN_MAX; ++i) {
         // SSID last: it may contain spaces, and the reader takes the rest of
         // the line for it.
