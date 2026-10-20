@@ -554,6 +554,37 @@ class WifiPanelTests(TestCase):
     def test_the_scan_command_is_offered(self):
         self.assertIn("L", [c for c, _ in self.con.task.commands(self.con)])
 
+    def test_a_rescan_does_not_blank_the_list_while_it_runs(self):
+        """BEGIN arrives after the radio has finished scanning, so nothing is
+        gained by clearing at BEGIN - and if the scan returns nothing, the old
+        list is all the operator has left."""
+        self.scan("UR_Field", "Other")
+        before = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.con._on_board_line("NET BEGIN")
+        during = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertIn("UR_Field", before)
+        self.assertIn("UR_Field", during)
+
+    def test_a_scan_that_finds_nothing_says_so(self):
+        """Falling back to DATA would hide the answer to the question."""
+        self.con._on_board_line("NET BEGIN")
+        self.con._on_board_line("NET 0 END")
+        text = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertIn("0 found", text)
+        self.assertEqual(self.con.mission["nets"], [])
+
+    def test_the_first_scan_says_it_is_running(self):
+        self.con._on_board_line("NET BEGIN")
+        text = " | ".join(t for t, _ in self.con.task.info(self.con))
+        self.assertIn("scanning", text)
+
+    def test_a_finished_scan_replaces_the_previous_one(self):
+        self.scan("Old")
+        self.con._on_board_line("NET BEGIN")
+        self.con._on_board_line("NET -50 1 New")
+        self.con._on_board_line("NET 1 END")
+        self.assertEqual([n[2] for n in self.con.mission["nets"]], ["New"])
+
     def test_the_hints_draw_while_typing_without_breaking_the_frame(self):
         frame = frame_with_tags(7)
         self.con._key(ord("t"))

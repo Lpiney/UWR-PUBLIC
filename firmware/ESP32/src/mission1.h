@@ -205,8 +205,12 @@ inline void task(void *) {
     // brings it back.
     if (reqScan()) {
       reqScan() = false;
-      const int n = WiFi.scanNetworks();
+      // BEGIN goes out before the scan, not after. The radio then blocks this
+      // task for two or three seconds; without this the console would hear
+      // nothing at all until the whole list arrived in one burst, with no way
+      // to tell a slow scan from a command that never landed.
       post("NET", "BEGIN");
+      const int n = WiFi.scanNetworks();
       for (int i = 0; i < n && i < M1_SCAN_MAX; ++i) {
         // SSID last: it may contain spaces, and the reader takes the rest of
         // the line for it.

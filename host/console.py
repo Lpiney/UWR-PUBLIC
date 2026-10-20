@@ -833,6 +833,9 @@ class TaskWifi(Task):
         # A scan from a previous visit is stale and would keep the DATA line
         # hidden, so start clean.
         ctx.mission["nets"] = []
+        ctx.mission["scan_new"] = []
+        ctx.mission["scanning"] = False
+        ctx.mission["scan_count"] = None
         if ctx.board is not None:
             try:
                 # One fetch, so the referee sees current data, plus the two
@@ -869,7 +872,11 @@ class TaskWifi(Task):
         # A scan answers a question that DATA cannot, so while one is on screen
         # it takes the space: you scan when nothing is coming back, and then
         # the list of what the board can see is the thing worth looking at.
-        if m["nets"]:
+        if m["scanning"] and not m["nets"]:
+            # First scan of this visit. A rescan keeps the previous list up
+            # instead, so the panel never goes blank while the radio works.
+            lines.append(("nets  scanning...", AMBER))
+        elif m["nets"]:
             # Strongest first: a scan comes back in whatever order the radio
             # found them, and the one worth joining is the one with signal.
             # Capped, or a hall full of phones pushes the panel up into the
@@ -878,6 +885,13 @@ class TaskWifi(Task):
                     sorted(m["nets"], key=lambda n: -n[0])[:NETS_SHOWN]):
                 label = "nets  " if i == 0 else "      "
                 lines.append((f"{label}{rssi:>5} ch{channel:<3} {ssid}", WHITE))
+        elif m["scan_count"] is not None and m["scan_count"] <= 0:
+            # The scan finished and found nothing, or the radio refused it.
+            # Saying so matters: falling back to DATA hides the answer to the
+            # question that was asked.
+            why = ("0 found - nothing in range" if m["scan_count"] == 0
+                   else "scan failed")
+            lines.append((f"nets  {why}", RED))
         elif m["data"]:
             # The whole string is shown, wrapped rather than cut: this is the
             # line the referee reads, and a truncation would be silent. The
@@ -912,7 +926,9 @@ class Console:
         self.now = time.monotonic()
         self.last_frame = None
         self.mission = {"wifi": "-", "rssi": "-", "ip": "-", "http": "-",
-                        "data": "", "ssid": "-", "url": "-", "nets": []}
+                        "data": "", "ssid": "-", "url": "-",
+                        "nets": [], "scan_new": [], "scanning": False,
+                        "scan_count": None}
         self.apriltag = AprilTagScanner(mode="largest", min_hits=3, expected=3)
         self.color = ColorDetector()
         self.mouse = Mouse()
@@ -942,16 +958,29 @@ class Console:
         elif tag == "NET":
             # A scan, sent as BEGIN / one line per network / END. The network
             # name is last because it may contain spaces.
+            #
+            # Results are collected into a staging list and swapped in at END,
+            # never cleared at BEGIN. BEGIN arrives after the radio has already
+            # finished scanning, and a scan that returns nothing - or whose
+            # lines the board could not queue - would otherwise wipe the list
+            # already on screen and put nothing back.
             rest = line[len(parts[0]):].strip()
             if rest == "BEGIN":
-                self.mission["nets"] = []
+                self.mission["scanning"] = True
+                self.mission["scan_count"] = None
+                self.mission["scan_new"] = []
             elif rest.endswith(" END"):
-                pass
+                try:
+                    self.mission["scan_count"] = int(rest.split()[0])
+                except (ValueError, IndexError):
+                    self.mission["scan_count"] = None
+                self.mission["nets"] = self.mission["scan_new"]
+                self.mission["scanning"] = False
             else:
                 rssi, _, tail = rest.partition(" ")
                 channel, _, ssid = tail.partition(" ")
                 try:
-                    self.mission["nets"].append((int(rssi), channel, ssid))
+                    self.mission["scan_new"].append((int(rssi), channel, ssid))
                 except ValueError:
                     pass          # not a line we recognise; nothing to show
         elif tag in ("OK", "ERR", "EV"):
