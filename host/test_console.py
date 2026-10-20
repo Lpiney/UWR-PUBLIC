@@ -14,7 +14,8 @@ import numpy as np
 
 from console import (AMBER, BTN_APRILTAG, BTN_CAPTURE, COMMAND_MAX, GREEN, RED,
                      Console, Pad, Task, TaskAprilTag, TaskColor, TaskWifi,
-                     _text_wh, fit_text, upright, vertical_label)
+                     _text_wh, fit_text, throttle_frac, upright,
+                     vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
 from vision.color import DEFAULT_RANGES, sample_at
 from vision.test_apriltag import frame_with_tags
@@ -558,6 +559,37 @@ class WifiPanelTests(TestCase):
         self.con._key(ord("t"))
         out = self.con.render(telemetry(), True, frame=frame.copy())
         self.assertEqual(out.shape, frame.shape)
+
+
+class ThrottlePanelTests(TestCase):
+    """The panel shows throttle, not pulse width: 1718 is what the ESC is
+    given, -36% is what the operator can act on."""
+
+    def test_neutral_is_zero(self):
+        self.assertEqual(throttle_frac(1500), 0.0)
+
+    def test_the_ends_are_full_scale(self):
+        self.assertEqual(throttle_frac(2000), 1.0)
+        self.assertEqual(throttle_frac(1000), -1.0)
+
+    def test_half_throttle_either_way(self):
+        self.assertAlmostEqual(throttle_frac(1750), 0.5)
+        self.assertAlmostEqual(throttle_frac(1250), -0.5)
+
+    def test_values_outside_the_range_are_clamped(self):
+        self.assertEqual(throttle_frac(2500), 1.0)
+        self.assertEqual(throttle_frac(500), -1.0)
+
+    def test_the_panel_draws_for_a_live_telemetry_frame(self):
+        con = make_console()
+        out = con.render(telemetry(), True, frame=frame_with_tags(7).copy())
+        self.assertEqual(out.shape, frame_with_tags(7).shape)
+
+    def test_the_panel_draws_before_the_board_answers(self):
+        """telem is None until the first JOY line arrives."""
+        con = make_console()
+        out = con.render(None, False, frame=frame_with_tags(7).copy())
+        self.assertGreater(int(out.sum()), 0)
 
 
 class UprightTests(TestCase):

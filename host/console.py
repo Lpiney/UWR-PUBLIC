@@ -126,7 +126,6 @@ GREEN = (90, 220, 90)
 AMBER = (60, 200, 240)
 RED = (80, 80, 230)
 
-PULSE_MIN = 1000
 PULSE_MAX = 2000
 PULSE_NEUTRAL = 1500
 
@@ -460,8 +459,14 @@ def draw_panel(img, x, y, lines, anchor="tl", fs=0.5, pad=9, gap=6, title=None):
     return x, y, w, h
 
 
-def pulse_frac(us: int) -> float:
-    return max(0.0, min(1.0, (us - PULSE_MIN) / float(PULSE_MAX - PULSE_MIN)))
+def throttle_frac(us: int) -> float:
+    """Signed throttle, -1..+1, from a pulse width. 0 is neutral.
+
+    The panel shows throttle rather than microseconds: 1718 is a number the
+    ESC understands, not one the operator can act on at a glance.
+    """
+    half = (PULSE_MAX - PULSE_NEUTRAL)
+    return max(-1.0, min(1.0, (us - PULSE_NEUTRAL) / float(half)))
 
 
 # ===========================================================================
@@ -1094,7 +1099,12 @@ class Console:
 
 
     def _draw_motors(self, img, telem):
-        """Motor panel: one row per side, each with its own pulse-width gauge.
+        """Throttle panel: one row per thruster, each with a centred gauge.
+
+        Throttle, not pulse width. 1718 is what the ESC is given; -36% is what
+        the operator can act on. The gauge is centred on zero - neutral in the
+        middle, full reverse at the left edge, full ahead at the right - so the
+        direction reads off the shape without parsing the sign.
 
         Hand-rolled rather than using draw_panel, because draw_panel places
         text and gauges in separate bands and this needs a gauge beside each
@@ -1106,26 +1116,48 @@ class Console:
             return
 
         fs, pad, gap = 0.5, 9, 6
-        rows = [("L", telem.l_us), ("R", telem.r_us),
-                (vertical_label(telem.z), telem.v_us)]
-        label_w, label_h = _text_wh(f"{'DOWN':<5}{PULSE_MAX:4d}", fs)
-        line_h = label_h + gap
-        bar_w, bar_h = 180, label_h - 6
+        # (label, signed value, how the number is written)
+        vertical = vertical_label(telem.z)
+        rows = [("L", throttle_frac(telem.l_us), "signed"),
+                ("R", throttle_frac(telem.r_us), "signed"),
+                (vertical, telem.z, "magnitude")]
 
-        w = pad * 2 + label_w + 12 + bar_w
+        label_w, label_h = _text_wh(f"{'DOWN':<4}{'+100%':>7}", fs)
+        line_h = label_h + gap
+        bar_w, bar_h = 170, label_h - 6
+
+        w = pad * 2 + label_w + 14 + bar_w
         h = pad * 2 + line_h * len(rows)
         x, y = _panel_box(img, img.shape[1] - 16, 16, w, h, "tr")
 
         ty = y + pad
-        for name, us in rows:
-            cv2.putText(img, f"{name:<5}{us:4d}", (x + pad, ty + label_h - gap),
+        for name, value, shown in rows:
+            value = max(-1.0, min(1.0, value))
+            pct = int(round(value * 100))
+            # L and R carry their sign; the vertical row's label already says
+            # UP or DOWN, and "DOWN -40%" reads badly. Neutral is written
+            # without a sign - "+0%" reads like a mistake.
+            if shown != "signed" or pct == 0:
+                text = f"{abs(pct)}%"
+            else:
+                text = f"{pct:+d}%"
+            cv2.putText(img, f"{name:<4}{text:>7}", (x + pad, ty + label_h - gap),
                         FONT, fs, WHITE, THICKNESS, cv2.LINE_AA)
-            bx = x + pad + label_w + 12
+
+            bx = x + pad + label_w + 14
             by = ty + 3
+            mid = bx + bar_w // 2
             cv2.rectangle(img, (bx, by), (bx + bar_w, by + bar_h), DARK, -1)
-            cv2.rectangle(img, (bx, by),
-                          (bx + int(bar_w * pulse_frac(us)), by + bar_h),
-                          AMBER, -1)
+            reach = int((bar_w / 2.0) * abs(value))
+            if value >= 0.0:
+                cv2.rectangle(img, (mid, by), (mid + reach, by + bar_h),
+                              AMBER, -1)
+            else:
+                cv2.rectangle(img, (mid - reach, by), (mid, by + bar_h),
+                              AMBER, -1)
+            # The centre tick stays visible when the bar is empty, so neutral
+            # is a place on the gauge and not just an absence of colour.
+            cv2.line(img, (mid, by), (mid, by + bar_h), GREY, 1)
             ty += line_h
 
     def _draw_hints(self, img):
