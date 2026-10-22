@@ -35,7 +35,6 @@ Usage
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from typing import NamedTuple
@@ -145,24 +144,10 @@ class Pad:
         self.name = ""
 
     def open(self) -> bool:
-        # The console window belongs to OpenCV, and the diagnostic runs in a
-        # terminal: neither gives pygame keyboard focus. Keep controller input
-        # updating in both cases. This must precede SDL initialisation.
-        os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
         import pygame
         pygame.init()
         pygame.joystick.init()
         self._pygame = pygame
-        if sys.platform == "darwin":
-            # macOS delivers already-connected controllers asynchronously on
-            # its event loop. An immediate count can incorrectly report none.
-            # This runs before opening the board, never in the drive loop.
-            deadline = time.monotonic() + 2.0
-            while pygame.joystick.get_count() == 0 and time.monotonic() < deadline:
-                pygame.event.pump()
-                if pygame.joystick.get_count() != 0:
-                    break
-                time.sleep(0.02)
         if pygame.joystick.get_count() == 0:
             return False
         self.js = pygame.joystick.Joystick(0)
