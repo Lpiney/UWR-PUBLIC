@@ -93,14 +93,25 @@ inline void syncParams() {
   }
 }
 
+// Clamp a pulse width to the throttle cap, measured from neutral so the limit
+// stays symmetric when the neutral itself has been moved. At maxPct=100 the
+// span is the whole travel and this changes nothing.
+inline int capped(int us) {
+  const params::Data &p = params::d();
+  const int span = (int)lroundf((ESC_US_MAX - ESC_US_NEUTRAL) * (p.maxPct / 100.0f));
+  return constrain(us, p.neutral - span, p.neutral + span);
+}
+
 // Mixer output -> targets. Trims are applied here, then constrained, so a bad
-// trim can never push the pulse width outside the ESC's travel.
+// trim can never push the pulse width outside the ESC's travel. The throttle
+// cap goes last: a trim large enough to reach past the cap is exactly the case
+// it has to catch.
 inline void setTarget(int l, int r, int v) {
   State &s = st();
   s.safetyStop = false;
-  s.targetL = constrain(l + params::d().trimL, ESC_US_MIN, ESC_US_MAX);
-  s.targetR = constrain(r + params::d().trimR, ESC_US_MIN, ESC_US_MAX);
-  s.targetV = constrain(v + params::d().trimV, ESC_US_MIN, ESC_US_MAX);
+  s.targetL = capped(constrain(l + params::d().trimL, ESC_US_MIN, ESC_US_MAX));
+  s.targetR = capped(constrain(r + params::d().trimR, ESC_US_MIN, ESC_US_MAX));
+  s.targetV = capped(constrain(v + params::d().trimV, ESC_US_MIN, ESC_US_MAX));
 }
 
 // Safety stop: no link or safety key locked. Stick centring uses the drive ramp.

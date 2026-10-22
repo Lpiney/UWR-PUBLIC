@@ -40,6 +40,18 @@ struct Data {
   int    fsMs        = LINK_TIMEOUT_MS;   // link timeout before forcing neutral
   int    pollMs      = 2000;              // how often to fetch from HTTP
   int    wifiRetryMs = WIFI_RETRY_MS;     // association retry interval
+
+  // Global throttle cap, in percent of the full 1000-2000 us travel.
+  //
+  // Why it exists: a full-throttle forward-to-reverse change browns out the
+  // ESC on the current power system - the ESC re-arms and beeps. Capping the
+  // travel caps the current spike, which both narrows the diagnosis (if the
+  // beep stops, the cause is supply sag) and gives a usable boat while the
+  // wiring is being fixed.
+  //
+  // 100 = the full range, 30 = 1350-1650 us. Applied after the trim, so a
+  // large trim cannot push the pulse past the cap.
+  int    maxPct      = 30;
 };
 
 inline Preferences& nvs() { static Preferences p; return p; }
@@ -96,6 +108,7 @@ inline void clampAll() {
   p.fsMs        = constrain(p.fsMs, 100, 5000);
   p.pollMs      = constrain(p.pollMs, 200, 60000);
   p.wifiRetryMs = constrain(p.wifiRetryMs, 3000, 120000);
+  p.maxPct      = constrain(p.maxPct, 0, 100);
 }
 
 inline void begin() {
@@ -112,6 +125,7 @@ inline void begin() {
   p.fsMs        = nvs().getInt("fsMs",        p.fsMs);
   p.pollMs      = nvs().getInt("pollMs",      p.pollMs);
   p.wifiRetryMs = nvs().getInt("wifiRetry",   p.wifiRetryMs);
+  p.maxPct      = nvs().getInt("maxPct",      p.maxPct);
   clampAll();
 }
 
@@ -133,7 +147,7 @@ inline void reset() {
 inline bool known(const String &key) {
   return key == "ssid" || key == "pass" || key == "url" || key == "neutral" ||
          key == "trimL" || key == "trimR" || key == "trimV" || key == "fsMs" ||
-         key == "pollMs" || key == "wifiRetryMs";
+         key == "pollMs" || key == "wifiRetryMs" || key == "maxPct";
 }
 
 // The organisers hand out the tower's IP address, not a URL, so what gets
@@ -171,6 +185,8 @@ inline bool set(const String &key, const String &val) {
     p.pollMs = val.toInt();  nvs().putInt("pollMs", p.pollMs);
   } else if (key == "wifiRetryMs") {
     p.wifiRetryMs = val.toInt(); nvs().putInt("wifiRetry", p.wifiRetryMs);
+  } else if (key == "maxPct") {
+    p.maxPct = val.toInt();   nvs().putInt("maxPct", p.maxPct);
   } else {
     return false;
   }
@@ -190,6 +206,7 @@ inline String get(const String &key) {
   if (key == "fsMs")        return String(p.fsMs);
   if (key == "pollMs")      return String(p.pollMs);
   if (key == "wifiRetryMs") return String(p.wifiRetryMs);
+  if (key == "maxPct")      return String(p.maxPct);
   return "";
 }
 
@@ -201,7 +218,8 @@ inline String dump() {
          " trimL=" + String(p.trimL) + " trimR=" + String(p.trimR) +
          " trimV=" + String(p.trimV) +
          " fsMs=" + String(p.fsMs) + " pollMs=" + String(p.pollMs) +
-         " wifiRetryMs=" + String(p.wifiRetryMs);
+         " wifiRetryMs=" + String(p.wifiRetryMs) +
+         " maxPct=" + String(p.maxPct);
 }
 
 }  // namespace params
