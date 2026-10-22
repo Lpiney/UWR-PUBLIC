@@ -148,6 +148,16 @@ class Pad:
         pygame.init()
         pygame.joystick.init()
         self._pygame = pygame
+        if sys.platform == "darwin":
+            # macOS delivers already-connected controllers asynchronously on
+            # its event loop. An immediate count can incorrectly report none.
+            # This runs before opening the board, never in the drive loop.
+            deadline = time.monotonic() + 2.0
+            while pygame.joystick.get_count() == 0 and time.monotonic() < deadline:
+                pygame.event.pump()
+                if pygame.joystick.get_count() != 0:
+                    break
+                time.sleep(0.02)
         if pygame.joystick.get_count() == 0:
             return False
         self.js = pygame.joystick.Joystick(0)

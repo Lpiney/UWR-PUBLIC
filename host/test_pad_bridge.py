@@ -9,6 +9,8 @@ controller, so the suite needs no hardware at all.
 """
 
 from unittest import TestCase
+from unittest.mock import patch
+from types import SimpleNamespace
 
 from pad_bridge import (DEFAULT_DEADMAN_BUTTON, TRIGGER_FULL, TRIGGER_REST,
                         Latch, Pad, Telemetry, btn_name, cmd_line,
@@ -96,6 +98,60 @@ def make_pad(axes=(0.0, 0.0), buttons=(), **kw):
 
 
 # ---------------------------------------------------------------------------
+
+class StartupTests(TestCase):
+    def open_pad(self, platform, arrives_after):
+        clock = SimpleNamespace(now=0.0, pumps=0)
+
+        def pump():
+            clock.pumps += 1
+
+        def sleep(seconds):
+            clock.now += seconds
+
+        pygame = SimpleNamespace(
+            init=lambda: None,
+            joystick=SimpleNamespace(
+                init=lambda: None,
+                get_count=lambda: int(arrives_after is not None and
+                                      clock.pumps >= arrives_after),
+                Joystick=FakeJoystick,
+            ),
+            event=SimpleNamespace(pump=pump),
+        )
+        pad = Pad(0, 1, DEFAULT_DEADMAN_BUTTON, False, False)
+        with patch.dict("sys.modules", {"pygame": pygame}), \
+             patch("pad_bridge.sys.platform", platform), \
+             patch("pad_bridge.time.monotonic", lambda: clock.now), \
+             patch("pad_bridge.time.sleep", sleep):
+            opened = pad.open()
+        return pad, opened, clock
+
+    def test_mac_waits_for_already_connected_controller_to_be_discovered(self):
+        pad, opened, clock = self.open_pad("darwin", arrives_after=3)
+        self.assertTrue(opened)
+        self.assertEqual(pad.name, "FakePad0")
+        self.assertEqual(clock.pumps, 3)
+
+    def test_mac_does_not_delay_when_controller_is_already_enumerated(self):
+        _, opened, clock = self.open_pad("darwin", arrives_after=0)
+        self.assertTrue(opened)
+        self.assertEqual(clock.now, 0.0)
+        self.assertEqual(clock.pumps, 0)
+
+    def test_mac_reports_missing_controller_after_bounded_wait(self):
+        pad, opened, clock = self.open_pad("darwin", arrives_after=None)
+        self.assertFalse(opened)
+        self.assertIsNone(pad.js)
+        self.assertGreaterEqual(clock.now, 2.0)
+        self.assertLess(clock.now, 2.03)
+
+    def test_windows_keeps_immediate_missing_controller_result(self):
+        _, opened, clock = self.open_pad("win32", arrives_after=None)
+        self.assertFalse(opened)
+        self.assertEqual(clock.now, 0.0)
+        self.assertEqual(clock.pumps, 0)
+
 
 class HotPlugTests(TestCase):
     """Unplugging the controller mid-run used to crash the bridge."""

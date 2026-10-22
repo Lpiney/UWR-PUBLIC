@@ -60,6 +60,9 @@ PlatformIO 用 VS Code 的擴充（「開啟資料夾」打開 `firmware\ESP32`�
 
 **macOS / Linux**
 
+macOS 啟動時會處理系統事件，最多等待 2 秒讓已連接的手柄完成辨識；
+這發生在開啟 ESP32 序列埠之前，不會阻塞行進中的控制迴圈。
+
 ```bash
 python3 -m pip install -r host/requirements.txt
 ```
