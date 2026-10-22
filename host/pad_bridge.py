@@ -35,6 +35,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import NamedTuple
@@ -144,6 +145,10 @@ class Pad:
         self.name = ""
 
     def open(self) -> bool:
+        # The console window belongs to OpenCV, and the diagnostic runs in a
+        # terminal: neither gives pygame keyboard focus. Keep controller input
+        # updating in both cases. This must precede SDL initialisation.
+        os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
         import pygame
         pygame.init()
         pygame.joystick.init()

@@ -8,6 +8,8 @@ laptop's Bluetooth modem instead of the board. Every check runs against a fake
 controller, so the suite needs no hardware at all.
 """
 
+import os
+
 from unittest import TestCase
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -100,7 +102,7 @@ def make_pad(axes=(0.0, 0.0), buttons=(), **kw):
 # ---------------------------------------------------------------------------
 
 class StartupTests(TestCase):
-    def open_pad(self, platform, arrives_after):
+    def open_pad(self, platform, arrives_after, background=None):
         clock = SimpleNamespace(now=0.0, pumps=0)
 
         def pump():
@@ -109,8 +111,11 @@ class StartupTests(TestCase):
         def sleep(seconds):
             clock.now += seconds
 
+        def initialise():
+            clock.background = os.environ.get("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS")
+
         pygame = SimpleNamespace(
-            init=lambda: None,
+            init=initialise,
             joystick=SimpleNamespace(
                 init=lambda: None,
                 get_count=lambda: int(arrives_after is not None and
@@ -120,12 +125,27 @@ class StartupTests(TestCase):
             event=SimpleNamespace(pump=pump),
         )
         pad = Pad(0, 1, DEFAULT_DEADMAN_BUTTON, False, False)
-        with patch.dict("sys.modules", {"pygame": pygame}), \
+        environment = {} if background is None else {
+            "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS": background}
+        with patch.dict("pad_bridge.os.environ", environment, clear=True), \
+             patch.dict("sys.modules", {"pygame": pygame}), \
              patch("pad_bridge.sys.platform", platform), \
              patch("pad_bridge.time.monotonic", lambda: clock.now), \
              patch("pad_bridge.time.sleep", sleep):
             opened = pad.open()
         return pad, opened, clock
+
+    def test_background_controller_input_is_enabled_before_sdl_initialises(self):
+        for platform in ("darwin", "win32", "linux"):
+            with self.subTest(platform=platform):
+                _, opened, clock = self.open_pad(platform, arrives_after=0)
+                self.assertTrue(opened)
+                self.assertEqual(clock.background, "1")
+
+    def test_explicit_background_input_environment_setting_is_preserved(self):
+        _, opened, clock = self.open_pad("darwin", arrives_after=0, background="0")
+        self.assertTrue(opened)
+        self.assertEqual(clock.background, "0")
 
     def test_mac_waits_for_already_connected_controller_to_be_discovered(self):
         pad, opened, clock = self.open_pad("darwin", arrives_after=3)
