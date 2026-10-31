@@ -41,17 +41,20 @@ struct Data {
   int    pollMs      = 2000;              // how often to fetch from HTTP
   int    wifiRetryMs = WIFI_RETRY_MS;     // association retry interval
 
-  // Global throttle cap, in percent of the full 1000-2000 us travel.
+  // Throttle caps, in percent of the full 1000-2000 us travel. The two drive
+  // thrusters and the vertical thruster are capped separately because they
+  // were measured separately in the pool.
   //
-  // Why it exists: a full-throttle forward-to-reverse change browns out the
-  // ESC on the current power system - the ESC re-arms and beeps. Capping the
-  // travel caps the current spike, which both narrows the diagnosis (if the
-  // beep stops, the cause is supply sag) and gives a usable boat while the
-  // wiring is being fixed.
+  // Horizontal is 70: thrust was measured on the vehicle (2026-10-31) and the
+  // left and right motors came out even there. Above that they do not add
+  // useful thrust, they only add current.
   //
-  // 100 = the full range, 30 = 1350-1650 us. Applied after the trim, so a
-  // large trim cannot push the pulse past the cap.
-  int    maxPct      = 30;
+  // Vertical stays at 100: it works against buoyancy on its own and has no
+  // matching motor to balance against.
+  //
+  // Applied after the trim, so a large trim cannot push the pulse past a cap.
+  int    maxPct      = 70;                // horizontal pair (L and R)
+  int    maxPctV     = 100;               // vertical
 };
 
 inline Preferences& nvs() { static Preferences p; return p; }
@@ -109,6 +112,7 @@ inline void clampAll() {
   p.pollMs      = constrain(p.pollMs, 200, 60000);
   p.wifiRetryMs = constrain(p.wifiRetryMs, 3000, 120000);
   p.maxPct      = constrain(p.maxPct, 0, 100);
+  p.maxPctV     = constrain(p.maxPctV, 0, 100);
 }
 
 inline void begin() {
@@ -126,6 +130,7 @@ inline void begin() {
   p.pollMs      = nvs().getInt("pollMs",      p.pollMs);
   p.wifiRetryMs = nvs().getInt("wifiRetry",   p.wifiRetryMs);
   p.maxPct      = nvs().getInt("maxPct",      p.maxPct);
+  p.maxPctV     = nvs().getInt("maxPctV",     p.maxPctV);
   clampAll();
 }
 
@@ -147,7 +152,8 @@ inline void reset() {
 inline bool known(const String &key) {
   return key == "ssid" || key == "pass" || key == "url" || key == "neutral" ||
          key == "trimL" || key == "trimR" || key == "trimV" || key == "fsMs" ||
-         key == "pollMs" || key == "wifiRetryMs" || key == "maxPct";
+         key == "pollMs" || key == "wifiRetryMs" || key == "maxPct" ||
+         key == "maxPctV";
 }
 
 // The organisers hand out the tower's IP address, not a URL, so what gets
@@ -187,6 +193,8 @@ inline bool set(const String &key, const String &val) {
     p.wifiRetryMs = val.toInt(); nvs().putInt("wifiRetry", p.wifiRetryMs);
   } else if (key == "maxPct") {
     p.maxPct = val.toInt();   nvs().putInt("maxPct", p.maxPct);
+  } else if (key == "maxPctV") {
+    p.maxPctV = val.toInt();  nvs().putInt("maxPctV", p.maxPctV);
   } else {
     return false;
   }
@@ -207,6 +215,7 @@ inline String get(const String &key) {
   if (key == "pollMs")      return String(p.pollMs);
   if (key == "wifiRetryMs") return String(p.wifiRetryMs);
   if (key == "maxPct")      return String(p.maxPct);
+  if (key == "maxPctV")     return String(p.maxPctV);
   return "";
 }
 
@@ -219,7 +228,7 @@ inline String dump() {
          " trimV=" + String(p.trimV) +
          " fsMs=" + String(p.fsMs) + " pollMs=" + String(p.pollMs) +
          " wifiRetryMs=" + String(p.wifiRetryMs) +
-         " maxPct=" + String(p.maxPct);
+         " maxPct=" + String(p.maxPct) + " maxPctV=" + String(p.maxPctV);
 }
 
 }  // namespace params

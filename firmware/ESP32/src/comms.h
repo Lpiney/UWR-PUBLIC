@@ -250,6 +250,7 @@ inline String statusLine() {
          " stalls=" + String(diagnostics::st().stalls) +
          " reverse=" + String(thrusters::reverseMask()) +
          " max_pct=" + String(params::d().maxPct) +
+         " max_pct_v=" + String(params::d().maxPctV) +
          " enc="   + String(cmd().enable ? 1 : 0) +
          " link="  + String(linkOk(millis()) ? 1 : 0) +
          " wifi="  + mission1::wifiStateName() +

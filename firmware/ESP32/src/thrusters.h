@@ -93,12 +93,12 @@ inline void syncParams() {
   }
 }
 
-// Clamp a pulse width to the throttle cap, measured from neutral so the limit
-// stays symmetric when the neutral itself has been moved. At maxPct=100 the
+// Clamp a pulse width to a throttle cap, measured from neutral so the limit
+// stays symmetric when the neutral itself has been moved. At 100 percent the
 // span is the whole travel and this changes nothing.
-inline int capped(int us) {
+inline int capped(int us, int pct) {
   const params::Data &p = params::d();
-  const int span = (int)lroundf((ESC_US_MAX - ESC_US_NEUTRAL) * (p.maxPct / 100.0f));
+  const int span = (int)lroundf((ESC_US_MAX - ESC_US_NEUTRAL) * (pct / 100.0f));
   return constrain(us, p.neutral - span, p.neutral + span);
 }
 
@@ -106,12 +106,19 @@ inline int capped(int us) {
 // trim can never push the pulse width outside the ESC's travel. The throttle
 // cap goes last: a trim large enough to reach past the cap is exactly the case
 // it has to catch.
+//
+// The two caps differ because the thrusters were measured separately. The
+// horizontal pair has a matching partner to balance against and was even at
+// 70 percent; the vertical one works alone against buoyancy and keeps its
+// full travel.
 inline void setTarget(int l, int r, int v) {
   State &s = st();
   s.safetyStop = false;
-  s.targetL = capped(constrain(l + params::d().trimL, ESC_US_MIN, ESC_US_MAX));
-  s.targetR = capped(constrain(r + params::d().trimR, ESC_US_MIN, ESC_US_MAX));
-  s.targetV = capped(constrain(v + params::d().trimV, ESC_US_MIN, ESC_US_MAX));
+  const int hp = params::d().maxPct;      // horizontal
+  const int vp = params::d().maxPctV;     // vertical
+  s.targetL = capped(constrain(l + params::d().trimL, ESC_US_MIN, ESC_US_MAX), hp);
+  s.targetR = capped(constrain(r + params::d().trimR, ESC_US_MIN, ESC_US_MAX), hp);
+  s.targetV = capped(constrain(v + params::d().trimV, ESC_US_MIN, ESC_US_MAX), vp);
 }
 
 // Safety stop: no link or safety key locked. Stick centring uses the drive ramp.
