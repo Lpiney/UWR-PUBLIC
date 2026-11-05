@@ -8,6 +8,9 @@ happens on RB. That is easy to break by accident when adding a task.
 
 import time
 from unittest import TestCase
+from unittest.mock import patch
+import pathlib
+import tempfile
 
 import cv2
 import numpy as np
@@ -43,6 +46,17 @@ class FakeCamera:
 
     def release(self):
         pass
+
+
+def setUpModule():
+    # Synthetic test captures must never enter the operator's field logs.
+    global _record_mock
+    _record_mock = patch("console.record_colour")
+    _record_mock.start()
+
+
+def tearDownModule():
+    _record_mock.stop()
 
 
 class FakeBoard:
@@ -119,6 +133,7 @@ class ConsoleTaskTests(TestCase):
 
     def test_entering_the_colour_task_runs_nothing(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.pump(0.15, frame=colour_scene("R"))
         self.assertIsNone(self.con.task.answer)
 
@@ -130,15 +145,106 @@ class ConsoleTaskTests(TestCase):
                         frame=colour_scene("R") if frame is None else frame)
         self.con.mouse.x, self.con.mouse.y = x, y
 
+    def test_lab_mode_calibration_capture_and_reset(self):
+        self.con._switch(TaskColor)
+        task = self.con.task
+        with tempfile.TemporaryDirectory() as folder:
+            task.lab.path = pathlib.Path(folder) / "lab.json"
+            task.lab.samples = {c: [] for c in "RYB"}
+            self.assertEqual(task.method, "LAB")
+            for key, color in zip("123", "RYB"):
+                self.point_at(320, 225, colour_scene(color))
+                task.on_key(key, self.con)
+            task.on_key("c", self.con)
+            self.assertEqual(task.answer, "B")
+            task.on_key("[", self.con)
+            self.assertEqual(task.radius, 6)
+            task.on_key("0", self.con)
+            self.assertFalse(any(task.lab.samples.values()))
+            task.on_key("v", self.con)
+            self.assertEqual(task.method, "HSV")
+
+    def click_colour_button(self, action):
+        self.con.render(self.telemetry, True, frame=colour_scene("B"))
+        _, (x, y, w, h) = next(b for b in self.con.task.ui_buttons if b[0] == action)
+        self.con._mouse_event(cv2.EVENT_LBUTTONDOWN, x+w//2, y+h//2, 0, None)
+
+    def test_selected_colour_is_sampled_once_by_rb_after_aiming(self):
+        self.con._switch(TaskColor)
+        task = self.con.task
+        with tempfile.TemporaryDirectory() as folder:
+            task.lab.path = pathlib.Path(folder) / "lab.json"
+            task.lab.samples = {c: [] for c in "RYB"}
+            self.click_colour_button('cal_B')
+            self.assertEqual(task.pending_color, 'B')
+            self.assertFalse(task.lab.samples['B'])
+            # A stale target from before the sidebar selection must not be sampled.
+            self.con.mouse.x, self.con.mouse.y = 320, 225
+            self.assertFalse(task.capture(self.con))
+            self.assertEqual(task.pending_color, 'B')
+            self.con._mouse_event(cv2.EVENT_LBUTTONDOWN, 320, 225, 0, None)
+            self.assertFalse(task.lab.samples['B'])
+            pressed = [0] * 18
+            pressed[BTN_CAPTURE] = 1
+            self.con._handle_buttons(pressed, [0] * 18)
+            self.assertEqual(len(task.lab.samples['B']), 1)
+            self.assertIsNone(task.pending_color)
+            self.assertIn('Saved BLUE', task.feedback)
+            self.click_colour_button('recognize')
+            self.assertEqual(self.con.mouse.position(), (320, 225))
+            self.assertIn('calibrate all three', task.feedback)
+            self.assertEqual(len(task.lab.samples['B']), 1)
+            # Selecting again replaces that colour instead of accumulating.
+            self.click_colour_button('cal_B')
+            self.con._mouse_event(cv2.EVENT_MOUSEMOVE, 320, 225, 0, None)
+            self.con._key(ord('c'))
+            self.assertEqual(len(task.lab.samples['B']), 1)
+            self.assertIsNone(task.pending_color)
+
+    def test_sidebar_hover_does_not_move_the_selected_target(self):
+        self.con._switch(TaskColor)
+        self.point_at(320, 225)
+        self.con._mouse_event(cv2.EVENT_MOUSEMOVE, 700, 230, 0, None)
+        self.assertEqual(self.con.mouse.position(), (320, 225))
+
+    def test_mouse_clear_requires_confirmation_and_can_cancel(self):
+        self.con._switch(TaskColor)
+        task = self.con.task
+        with tempfile.TemporaryDirectory() as folder:
+            task.lab.path = pathlib.Path(folder) / "lab.json"
+            task.lab.samples = {'R': [[40, 50, 60]], 'Y': [], 'B': []}
+            self.click_colour_button('clear')
+            self.assertTrue(task.lab.samples['R'])
+            self.click_colour_button('cancel')
+            self.assertFalse(task.clear_confirm)
+            self.click_colour_button('clear')
+            self.click_colour_button('clear')
+            self.assertFalse(any(task.lab.samples.values()))
+
+    def test_key_feedback_and_embedded_debug_masks(self):
+        self.con._switch(TaskColor)
+        self.point_at(320, 225)
+        self.con._key(ord('v'))
+        self.assertEqual(self.con.task.last_input, 'Key: V')
+        self.assertIn('HSV', self.con.task.feedback)
+        self.con._key(ord('d'))
+        with patch('console.cv2.imshow') as show:
+            image = self.con.render(self.telemetry, True, frame=colour_scene('B'))
+        show.assert_not_called()
+        self.assertTrue(self.con.task.debug_open)
+        self.assertGreater(int(image[586:671, -346:-20].sum()), 0)
+
     def test_a_capture_needs_the_pointer_over_the_picture(self):
         """Before the mouse has ever been over the window there is nowhere
         to look, and saying so beats reading a stale point."""
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.assertFalse(self.con.mouse.known)
         self.assertFalse(self.con.task.capture(self.con))
 
     def test_pointing_at_a_pole_names_its_colour(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.point_at(320, 225)              # the pole in the test scene
         self.assertTrue(self.con.task.capture(self.con))
         self.assertEqual(self.con.task.answer, "R")
@@ -146,6 +252,7 @@ class ConsoleTaskTests(TestCase):
     def test_pointing_at_plain_background_gives_no_answer(self):
         """Grey pool floor is not a colour, whatever band its noise lands in."""
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.con.task.answer = "R"
         self.point_at(50, 100)               # above the pole and the floor
         self.con.task.capture(self.con)
@@ -156,6 +263,7 @@ class ConsoleTaskTests(TestCase):
         last point has to stand - moving off to the controller between aiming
         and pressing RB is the normal way to use this."""
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.point_at(320, 225)
         self.assertTrue(self.con.mouse.known)
         self.con.task.capture(self.con)
@@ -167,11 +275,13 @@ class ConsoleTaskTests(TestCase):
         is worse than showing nothing: the operator follows it and loses the
         sequence bonus without ever doubting the screen."""
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         text = " ".join(t for t, _ in self.con.task.info(self.con))
         self.assertNotIn("order", text.lower())
 
     def test_r_clears_the_answer(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.point_at(320, 225)
         self.con.task.capture(self.con)
         self.con.task.on_key("r", self.con)
@@ -182,6 +292,7 @@ class ConsoleTaskTests(TestCase):
         import tempfile
 
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         # Keep the written config out of the working tree.
         self.con.color.config_path = pathlib.Path(tempfile.mkdtemp()) / "cfg.json"
         before = [list(b) for b in self.con.color.ranges["R"]]
@@ -193,6 +304,7 @@ class ConsoleTaskTests(TestCase):
 
     def test_calibration_without_a_pointer_does_nothing(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         before = [list(b) for b in self.con.color.ranges["Y"]]
         self.con.task.on_key("2", self.con)
         self.assertEqual([list(b) for b in self.con.color.ranges["Y"]], before)
@@ -299,15 +411,15 @@ class ConsoleTaskTests(TestCase):
     def test_rb_edge_triggers_a_capture(self):
         self.con._switch(TaskAprilTag)
         self.con.task.on_key("l", self.con)
-        held = [0] * 10
+        held = [0] * 18
         held[BTN_CAPTURE] = 1
-        self.con._handle_buttons(held, [0] * 10)
+        self.con._handle_buttons(held, [0] * 18)
         self.assertTrue(self.con.task.capturing)
 
     def test_holding_rb_does_not_retrigger(self):
         self.con._switch(TaskAprilTag)
         self.con.task.on_key("l", self.con)
-        held = [0] * 10
+        held = [0] * 18
         held[BTN_CAPTURE] = 1
         self.con._handle_buttons(held, held)      # already down last frame
         self.assertFalse(self.con.task.capturing)
@@ -341,7 +453,9 @@ class ConsoleTaskTests(TestCase):
         for task_cls in (TaskAprilTag, TaskColor):
             self.con._switch(task_cls)
             out = self.con.render(self.telemetry, True, frame=self.tag_frame.copy())
-            self.assertEqual(out.shape, self.tag_frame.shape)
+            expected = (max(720, self.tag_frame.shape[0]),
+                        self.tag_frame.shape[1] + self.con.task.PANEL_WIDTH, 3) if task_cls is TaskColor else self.tag_frame.shape
+            self.assertEqual(out.shape, expected)
             self.assertGreater(int(out.sum()), 0)
 
     def test_every_task_declares_the_keys_it_handles(self):
@@ -350,7 +464,7 @@ class ConsoleTaskTests(TestCase):
         self.assertEqual([k for k, _ in TaskAprilTag().keys(self.con)],
                          ["L", "M", "C", "R"])
         self.assertEqual([k for k, _ in TaskColor().keys(self.con)],
-                         ["C", "1 2 3", "R", "D"])
+                         ["C", "1 2 3", "R", "D", "V", "[ ]", "0"])
         # Manual declares nothing of its own; Q and S are added globally.
         self.assertEqual(Task().keys(self.con), [])
 
@@ -643,6 +757,7 @@ class EvidenceTests(TestCase):
 
     def test_a_colour_answer_saves_one_picture(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.con.render(telemetry(), True, frame=colour_scene("R"))
         self.con.mouse.x, self.con.mouse.y = 320, 225
         self.con.task.capture(self.con)
@@ -651,6 +766,7 @@ class EvidenceTests(TestCase):
 
     def test_the_same_result_is_not_saved_twice(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.con.render(telemetry(), True, frame=colour_scene("R"))
         self.con.mouse.x, self.con.mouse.y = 320, 225
         self.con.task.capture(self.con)
@@ -660,6 +776,7 @@ class EvidenceTests(TestCase):
 
     def test_a_second_capture_saves_a_second_picture(self):
         self.con._switch(TaskColor)
+        self.con.task.method = "HSV"  # Existing HSV behaviour under test.
         self.con.render(telemetry(), True, frame=colour_scene("R"))
         self.con.mouse.x, self.con.mouse.y = 320, 225
         self.con.task.capture(self.con)

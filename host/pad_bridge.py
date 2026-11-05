@@ -35,6 +35,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import NamedTuple
@@ -64,15 +65,15 @@ PAD_Y_SIGN = -1.0
 # they MUST be checked with  --show-input  before the first run. This project
 # has read an axis number out of a specification and been wrong about it more
 # than once; the check costs ten seconds.
-TRIGGER_AXIS_LT = 4
+TRIGGER_AXIS_LT = 2 if sys.platform == "darwin" else 4
 TRIGGER_AXIS_RT = 5
-TRIGGER_REST = -1.0         # raw reading, trigger untouched
+TRIGGER_REST = 0.0 if sys.platform == "darwin" else -1.0         # raw reading, trigger untouched
 TRIGGER_FULL = +1.0         # raw reading, trigger fully pressed
 TRIGGER_DEADZONE = 0.08
 
 DEFAULT_AXIS_X = 0
 DEFAULT_AXIS_Y = 1
-DEFAULT_DEADMAN_BUTTON = 3      # Y, under SDL's standard gamepad mapping
+DEFAULT_DEADMAN_BUTTON = 7 if sys.platform == "darwin" else 3      # Y, under SDL's standard gamepad mapping
 CMD_HZ = 50
 
 PULSE_NEUTRAL = 1500
@@ -81,6 +82,8 @@ PULSE_NEUTRAL = 1500
 # messages; an unknown number is printed as-is rather than guessed at.
 BTN_NAMES = {0: "A", 1: "B", 2: "X", 3: "Y", 4: "LB", 5: "RB",
              6: "Back", 7: "Start", 8: "LStick", 9: "RStick"}
+if sys.platform == "darwin":
+    BTN_NAMES = {0: "A", 1: "B", 6: "X", 7: "Y", 15: "RB"}
 
 
 def btn_name(n) -> str:
@@ -144,10 +147,17 @@ class Pad:
         self.name = ""
 
     def open(self) -> bool:
+        # The OpenCV window owns focus; controller input must work in the background.
+        os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
         import pygame
         pygame.init()
         pygame.joystick.init()
         self._pygame = pygame
+        if sys.platform == "darwin":
+            deadline = time.monotonic() + 2.0
+            while pygame.joystick.get_count() == 0 and time.monotonic() < deadline:
+                pygame.event.pump()
+                time.sleep(0.05)
         if pygame.joystick.get_count() == 0:
             return False
         self.js = pygame.joystick.Joystick(0)
@@ -210,8 +220,8 @@ class Pad:
         deadman = bool(pressed[idx]) if (idx is not None and 0 <= idx < nb) else False
 
         return PadState(nx, ny,
-                        vertical_throttle(axis(TRIGGER_AXIS_LT),
-                                          axis(TRIGGER_AXIS_RT)),
+                        vertical_throttle(axis(TRIGGER_AXIS_LT), axis(TRIGGER_AXIS_RT))
+                        if max(TRIGGER_AXIS_LT, TRIGGER_AXIS_RT) < len(axes) else 0.0,
                         deadman, axes, pressed)
 
     def pressed_buttons(self) -> set:

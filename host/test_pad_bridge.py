@@ -8,6 +8,7 @@ laptop's Bluetooth modem instead of the board. Every check runs against a fake
 controller, so the suite needs no hardware at all.
 """
 
+import sys
 from unittest import TestCase
 
 from pad_bridge import (DEFAULT_DEADMAN_BUTTON, TRIGGER_FULL, TRIGGER_REST,
@@ -36,7 +37,7 @@ class FakeJoystick:
     def __init__(self, idx=0, axes=(0.0, 0.0), buttons=()):
         self.idx = idx
         self.axes = list(axes) + [0.0] * 6
-        self.buttons = [1 if i in buttons else 0 for i in range(11)]
+        self.buttons = [1 if i in buttons else 0 for i in range(18)]
 
     def init(self):
         pass
@@ -182,7 +183,7 @@ class TriggerTests(TestCase):
         self.assertAlmostEqual(trigger_amount(TRIGGER_FULL), 1.0)
 
     def test_halfway_reads_about_half(self):
-        self.assertAlmostEqual(trigger_amount(0.0), 0.5, delta=0.05)
+        self.assertAlmostEqual(trigger_amount((TRIGGER_REST + TRIGGER_FULL) / 2), 0.5, delta=0.05)
 
     def test_a_reading_past_the_end_is_clamped_not_extrapolated(self):
         self.assertEqual(trigger_amount(TRIGGER_FULL + 0.5), 1.0)
@@ -393,17 +394,43 @@ class ButtonLabelTests(TestCase):
     def test_sdl_numbers_map_to_the_expected_names(self):
         self.assertEqual(btn_name(0), "A")
         self.assertEqual(btn_name(1), "B")
-        self.assertEqual(btn_name(2), "X")
-        self.assertEqual(btn_name(3), "Y")
-        self.assertEqual(btn_name(5), "RB")
+        x, y, rb = (6, 7, 15) if sys.platform == "darwin" else (2, 3, 5)
+        self.assertEqual(btn_name(x), "X")
+        self.assertEqual(btn_name(y), "Y")
+        self.assertEqual(btn_name(rb), "RB")
 
     def test_an_unknown_number_is_shown_as_is_not_guessed(self):
         self.assertEqual(btn_name(42), "btn42")
 
     def test_the_safety_key_defaults_to_y(self):
-        self.assertEqual(DEFAULT_DEADMAN_BUTTON, 3)
+        self.assertEqual(DEFAULT_DEADMAN_BUTTON, 7 if sys.platform == "darwin" else 3)
 
 
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class MacMappingTests(TestCase):
+    def test_mac_trigger_rest_full_and_simultaneous(self):
+        from unittest.mock import patch
+        import pad_bridge
+        with patch.object(pad_bridge, 'TRIGGER_AXIS_LT', 2), patch.object(pad_bridge, 'TRIGGER_AXIS_RT', 5), patch.object(pad_bridge, 'TRIGGER_REST', 0.0):
+            pad = make_pad(axes=(0, 0, 0, 0, 0, 0), deadman=7)
+            self.assertEqual(pad.read().vz, 0)
+            pad.js.axes[2] = 1
+            self.assertEqual(pad.read().vz, -1)
+            pad.js.axes[5] = 1
+            self.assertEqual(pad.read().vz, 0)
+            pad.js.axes[2] = 0
+            self.assertEqual(pad.read().vz, 1)
+            pad.js.buttons[7] = 1
+            self.assertTrue(pad.read().deadman)
+
+    def test_missing_mac_trigger_axes_are_neutral(self):
+        from unittest.mock import patch
+        import pad_bridge
+        with patch.object(pad_bridge, 'TRIGGER_AXIS_LT', 2), patch.object(pad_bridge, 'TRIGGER_AXIS_RT', 5), patch.object(pad_bridge, 'TRIGGER_REST', 0.0):
+            pad = make_pad()
+            pad.js.axes = [0, 0]
+            self.assertEqual(pad.read().vz, 0)

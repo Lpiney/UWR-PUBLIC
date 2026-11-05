@@ -103,22 +103,29 @@ def box_around(x, y, radius, shape):
 
 def sample_at(frame, x, y, ranges, radius=SAMPLE_RADIUS):
     """Which of R/Y/B is under the pointer, or None if none of them is."""
+    return inspect_hsv(frame, x, y, ranges, radius)["answer"]
+
+
+def inspect_hsv(frame, x, y, ranges, radius=SAMPLE_RADIUS):
     x0, y0, w, h = box_around(x, y, radius, frame.shape)
     if w <= 0 or h <= 0:
-        return None
+        return {"answer": None, "reason": "empty sample"}
     hsv = cv2.cvtColor(frame[y0:y0 + h, x0:x0 + w], cv2.COLOR_BGR2HSV)
     total = w * h
 
     coloured = cv2.countNonZero(cv2.inRange(hsv, (0, 60, 35), (179, 255, 255)))
-    if coloured < total * MIN_COLOURED_SHARE:
-        return None
-
+    coloured_share = coloured / total
+    shares = {}
     best, best_share = None, 0.0
     for color, bands in ranges.items():
         share = cv2.countNonZero(color_mask(hsv, bands)) / total
+        shares[color] = share
         if share > best_share:
             best, best_share = color, share
-    return best if best_share >= MIN_MATCH_SHARE else None
+    reason = ("too few saturated pixels" if coloured_share < MIN_COLOURED_SHARE
+              else "colour match below 60%" if best_share < MIN_MATCH_SHARE else "accepted")
+    return {"answer": best if reason == "accepted" else None, "reason": reason,
+            "coloured_share": coloured_share, "shares": shares}
 
 
 def masks(frame, ranges):

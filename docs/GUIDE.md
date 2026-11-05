@@ -461,3 +461,54 @@ python3 -m unittest discover -s host -t host -v
 python3 -m unittest discover -s firmware/ESP32/tests -v
 pio run -d firmware/ESP32
 ```
+
+## macOS 手柄測試
+
+此版本在 macOS 上使用實測的 Xbox 手柄映射：Y 鍵編號 7，X 編號 6，RB 編號 15，LT 軸 2、RT 軸 5，扳機鬆開為 0。Windows 保持原映射。不同手柄、連線方式或系統版本可能有不同編號；啟用前用 `python3 host/pad_bridge.py --show-input` 檢查，先拆槳確認上、下與停止。RB 15 已由單獨按鍵測試確認。
+
+### 实验：Lab 颜色识别（电脑程序，无需重烧 ESP32）
+
+在本实验 worktree 运行 `host/console.py`，按手柄 B 进入颜色任务，默认使用 LAB。
+右侧控制栏显示 R/Y/B 样本数量，三种均有样本后显示 READY TO RECOGNIZE。
+
+标定：先点击右侧 Red / Yellow / Blue，再把鼠标移到彩色画面中对应杆的纯色中心，按 RB（或 C）采样。
+点击画面本身不再采样。每次采样尝试后自动退出待标定状态，再按 RB 就是识别；每种颜色只保留最近一次成功采样，新样本覆盖该颜色的旧样本，其他颜色不变。
+选颜色后必须先把指针移回画面，避免对之前的旧位置误采样。
+每次成功都会显示 Saved 和样本数量；失败会显示原因。
+请在预计比赛距离采样；重复采样会替换该颜色的参考值。
+样本自动存入 `host/lab-config.json`，重启后读取，不改动 HSV 的 `host/local-config.json`。
+Clear Lab samples 需要再次点击确认，Cancel 可取消待标定或清空确认。
+
+识别时，先在画面上指向目标，再按 RB、键盘 C，或点击 Recognize。
+移动鼠标到右侧按钮时保留画面内最后的取样位置。
+Smaller / Larger 调节取样框，确保框内主要是杆身。
+LAST INPUT 显示收到的键盘、鼠标或 RB 操作，下方显示结果或失败原因。
+键盘 1/2/3 仍可在鼠标当前位置直接标定红/黄/蓝；[ / ] 调大小，0 清空 Lab 样本。
+
+Debug settings 内可切换 HSV / Lab，并查看同一窗口里的 HSV 掩膜缩略图。
+快捷键 V 切换模式，D 打开掩膜调试。掩膜只是 HSV 阈值预览，不代表 Lab 结果。
+Lab 使用真实 CIELAB 单位的 CIE76 距离，比较各颜色已标定样本中的最近距离；
+暂定最大距离 25，第一名领先第二名至少 5，否则拒绝分类。这些是实验参数，需现场验证。
+
+两种模式每次识别（包括失败）都保存原始图片和 `events.jsonl` 到
+`host/snapshots/colour-diagnostics/`，记录取样位置、大小、判断原因、距离或匹配比例、当时标定参数。
+Lab 标定尝试也记录。日志和样本只存本机，不随 Git 同步到另一台电脑。
+
+### Windows 启动与搬到比赛电脑
+
+支持入口以 Windows 10/11、64 位 Python 3.11/3.12 为目标。下载发布页面的源代码 ZIP 并完整解压；
+不要直接在 ZIP 内运行。第一次安装需要网络，先双击根目录 `setup-windows.cmd`，
+看到 Setup complete 后双击 `run-console.cmd`。脚本使用项目自己的 `.venv-windows`，不会改动已有 Python 环境。
+如果没有 Python，先从 python.org 安装 64 位 Python 3.11 或 3.12。
+
+- 手柄原 Windows 映射保留：A=0、B=1、X=2、Y=3、RB=5；LT=4、RT=5，扳机静止值 -1。
+  不同手柄/驱动可能不同，双击 `show-input.cmd` 验证实际读数。
+- 相机优先 DirectShow，失败后尝试默认后端。可在命令行运行
+  `run-console.cmd --list-cameras` 或 `run-console.cmd --camera 1 --port COM5` 指定设备。
+- 窗口获得焦点时手柄仍允许后台输入；标定使用鼠标和 RB，不依赖键盘焦点。
+- 中文用户目录和含空格路径可保存标定与 PNG 日志。串口读取断开后锁定并清楚提示退出，不自动重连或解锁。
+- 颜色操作见上一节。原来的 Mac 标定不会随 Git/源码 ZIP 自动传过去；比赛电脑应在实际光照和距离重新标定。
+- 自动测试不连接相机、手柄、ESP32；Windows 实机仍需验证 USB/COM 端口、相机权限及手柄映射。
+  Lab 的混色拒绝、色差上限仍需泳池实测，本次发布没有声称水下识别率已达标。
+
+GitHub Actions 会在 Windows/macOS、Python 3.11/3.12 上安装依赖并执行主机测试；Windows 还会验证安装和启动脚本。

@@ -21,3 +21,9 @@ host/local-config.json
 .DS_Store
 .vscode/settings.json
 .gitignore
+
+# Experimental camera-specific Lab calibration
+host/lab-config.json
+
+# Windows launcher environment
+.venv-windows/

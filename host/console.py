@@ -64,8 +64,12 @@ from pad_bridge import (                       # noqa: E402
 from vision.apriltag import AprilTagScanner    # noqa: E402
 from vision.color import (                     # noqa: E402
     CALIBRATE_RADIUS, COLORS as POLE_COLORS, NAMES, ColorDetector,
-    box_around, calibrate, masks, sample_at,
+    box_around, calibrate, masks, sample_at, inspect_hsv,
 )
+
+from vision.lab_experiment import LabExperiment, record as record_colour
+from vision.color_ui import ColorControls
+from vision.image_io import write_png
 
 # ===========================================================================
 #  Configuration
@@ -88,9 +92,9 @@ CAM_EXPOSURE = 0.0      # 0 = auto. Set negative for manual on some webcams.
 # controller with  python3 pad_bridge.py --show-input  before trusting these.
 BTN_APRILTAG = 0        # A
 BTN_COLOR    = 1        # B
-BTN_WIFI     = 2        # X
+BTN_WIFI     = 6 if sys.platform == "darwin" else 2        # X
 # Y (3) is the safety key - see DEFAULT_DEADMAN_BUTTON in pad_bridge.
-BTN_CAPTURE  = 5        # RB: recognize once, in whichever task is active
+BTN_CAPTURE  = 15 if sys.platform == "darwin" else 5        # RB: recognize once, in whichever task is active
 
 # AprilTag capture window. Long enough to survive a frame blurred by a ripple,
 # short enough that pressing RB still feels immediate.
@@ -746,7 +750,7 @@ class TaskAprilTag(Task):
                 ("R", "reset scan")]
 
 
-class TaskColor(Task):
+class TaskColor(ColorControls, Task):
     """Mission 5: find coloured poles.
 
     Point at a pole and press RB. The patch under the pointer decides which
@@ -765,6 +769,11 @@ class TaskColor(Task):
     def __init__(self):
         self.answer = None          # colour from the last capture, or None
         self.seq = 0                # bumps per answer, for the evidence shot
+        self.init_controls()
+        self.method = "LAB"
+        self.radius = 7
+        self.lab = LabExperiment()
+        self.diagnostic = ""
 
     def enter(self, ctx):
         self.answer = None
@@ -779,9 +788,36 @@ class TaskColor(Task):
     def capture(self, ctx):
         x, y = ctx.mouse.position()
         if x is None:
+            self.notify("Point at the pole in the picture first.")
             print("move the mouse over the picture first, then press RB")
             return False
-        self.answer = sample_at(ctx.last_frame, x, y, ctx.color.ranges)
+        if ctx.last_frame is None:
+            return False
+        if self.pending_color:
+            if not self.pending_aimed:
+                self.notify("Move the pointer onto the pole first, then press RB.")
+                return False
+            color, self.pending_color = self.pending_color, None
+            self.pending_aimed = False
+            self.answer = None
+            self.calibrate_from_pointer(ctx, color)
+            return True
+        if self.method == "LAB":
+            report = self.lab.classify(ctx.last_frame, x, y, self.radius)
+        else:
+            report = inspect_hsv(ctx.last_frame, x, y, ctx.color.ranges, self.radius)
+        self.answer = report["answer"]
+        self.diagnostic = report["reason"]
+        self.notify(("Recognized: " + NAMES[self.answer]) if self.answer else self.diagnostic)
+        report.update(event="capture", method=self.method, pointer=[x, y],
+                      radius=self.radius,
+                      calibration=self.lab.samples if self.method == "LAB" else ctx.color.ranges)
+        try:
+            record_colour(ctx.last_frame, report)
+        except OSError as exc:
+            print(f"colour diagnostic save failed: {exc}")
+        print(f"{self.method}: {self.diagnostic}; "
+              f"scores={report.get('distances', report.get('shares', {}))}")
         if self.answer is None:
             print("nothing recognisable under the pointer - aim at bare pole")
         else:
@@ -792,17 +828,40 @@ class TaskColor(Task):
     def calibrate_from_pointer(self, ctx, color):
         x, y = ctx.mouse.position()
         if x is None:
+            self.notify(f"Point at the {color} pole in the picture first.")
             print(f"point at bare {color} pole first, then press the key")
+            return
+        if ctx.last_frame is None:
+            return
+        if self.method == "LAB":
+            try:
+                self.lab.add(color, ctx.last_frame, x, y, self.radius)
+                print(f"Lab {color}: {len(self.lab.samples[color])} samples saved to {self.lab.path}")
+                self.diagnostic = f"calibrated {color}"
+                self.notify(f"Saved {NAMES[color]} sample. Total: {len(self.lab.samples[color])}.")
+            except (ValueError, OSError) as exc:
+                self.diagnostic = str(exc)
+                self.notify(f"Calibration failed: {exc}")
+                print(f"Lab calibration failed: {exc}")
+            try:
+                record_colour(ctx.last_frame, dict(event="calibration", method="LAB",
+                              color=color, pointer=[x, y], radius=self.radius,
+                              reason=self.diagnostic, calibration=self.lab.samples))
+            except OSError as exc:
+                print(f"colour diagnostic save failed: {exc}")
             return
         box = box_around(x, y, CALIBRATE_RADIUS, ctx.last_frame.shape)
         bands = calibrate(ctx.last_frame, box)
         if not bands:
+            self.notify("HSV calibration failed: use a clear, coloured part of the pole.")
             return
         try:
             ctx.color.apply_calibration(color, bands)
+            self.notify(f"Saved {NAMES[color]} HSV calibration.")
             print(f"{color} calibrated from the pointer, saved to "
                   f"{ctx.color.config_path}")
         except (ValueError, OSError) as exc:
+            self.notify(f"Calibration failed: {exc}")
             print(f"calibration failed: {exc}")
 
     def overlay(self, ctx, frame):
@@ -812,6 +871,9 @@ class TaskColor(Task):
         if x is not None:
             cv2.drawMarker(frame, (x, y), POINTER_COLOR, cv2.MARKER_CROSS,
                            22, 2, cv2.LINE_AA)
+
+            x0, y0, w, h = box_around(x, y, self.radius, frame.shape)
+            cv2.rectangle(frame, (x0, y0), (x0+w-1, y0+h-1), POINTER_COLOR, 1)
 
         if self.answer is not None:
             self._draw_answer(frame, self.answer)
@@ -832,12 +894,17 @@ class TaskColor(Task):
                     thickness, cv2.LINE_AA)
 
     def info(self, ctx):
-        lines = [("MODE  Colour", AMBER)]
+        lines = [(f"MODE  Colour {self.method} ({2*self.radius+1}px)", AMBER)]
+        if self.method == "LAB":
+            lines.append(("samples " + " ".join(f"{c}:{len(v)}" for c, v in self.lab.samples.items()), GREY))
+        if self.diagnostic:
+            lines.append((self.diagnostic, GREY))
 
         if not ctx.mouse.known:
             lines.append(("move the mouse over the picture first", GREY))
         else:
-            lines.append(("READY - point at a pole, press RB", GREY))
+            ready = self.method == "HSV" or all(self.lab.samples.values())
+            lines.append((("READY - point at a pole, press RB" if ready else "SETUP - calibrate R, Y and B"), GREY))
 
         if self.answer is None:
             lines.append(("answer   --", GREY))
@@ -850,19 +917,50 @@ class TaskColor(Task):
         return [("C", "capture"),
                 ("1 2 3", "calibrate R/Y/B"),
                 ("R", "clear answer"),
-                ("D", "colour masks")]
+                ("D", "HSV masks"),
+                ("V", "HSV / Lab"),
+                ("[ ]", "sample size"),
+                ("0", "reset Lab samples")]
 
     def on_key(self, key, ctx):
+        self.last_input = "Key: " + key.upper()
+        if key == "v":
+            self.method = "LAB" if self.method == "HSV" else "HSV"
+            self.answer = None
+            self.diagnostic = self.lab.load_error or ""
+            self.pending_color = None
+            self.notify(f"Mode changed to {self.method}.")
+            return True
+        if key in ("[", "]"):
+            self.radius = max(2, min(15, self.radius + (1 if key == "]" else -1)))
+            self.answer = None
+            self.notify(f"Sample box: {self.radius*2+1} pixels.")
+            return True
+        if key == "0":
+            try:
+                self.lab.path.write_text('{"R": [], "Y": [], "B": []}\n', encoding="utf-8")
+                self.lab.samples = {c: [] for c in "RYB"}
+                self.answer = None
+                self.diagnostic = "Lab samples cleared"
+                self.pending_color = None
+                self.notify("Lab samples cleared. Calibrate R, Y and B again.")
+            except OSError as exc:
+                self.diagnostic = str(exc)
+                self.notify(f"Clear failed: {exc}")
+            return True
         if key == "c":
             return self.capture(ctx)
         if key == "r":
             self.answer = None
             return True
         if key in ("1", "2", "3"):
+            self.pending_color = None
             self.calibrate_from_pointer(ctx, {"1": "R", "2": "Y", "3": "B"}[key])
             return True
         if key == "d":
+            self.debug_open = True
             ctx.color.show_masks = not ctx.color.show_masks
+            self.notify("HSV mask preview toggled (debug only).")
             if not ctx.color.show_masks:
                 close_window(MASKS_WINDOW)
             return True
@@ -1137,6 +1235,8 @@ class Console:
             if type(self.task).capture is Task.capture:
                 print("nothing to capture - press A or B first")
             else:
+                if isinstance(self.task, TaskColor):
+                    self.task.last_input = "Controller: RB"
                 self.task.capture(self)
 
     # ---- OSD ----------------------------------------------------------
@@ -1299,7 +1399,8 @@ class Console:
         self._draw_motors(img, telem)
         draw_panel(img, 16, img.shape[0] - 16, self.task.info(self),
                    anchor="bl", fs=0.5)
-        self._draw_hints(img)
+        if not isinstance(self.task, TaskColor):
+            self._draw_hints(img)
 
     def snapshot(self, frame, label="rov"):
         """Write one frame to host/snapshots/.
@@ -1314,10 +1415,11 @@ class Console:
         stamp = (time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
                  + f"-{int(now * 1000) % 1000:03d}")
         path = folder / f"{label}-{stamp}.png"
-        if cv2.imwrite(str(path), frame):
+        try:
+            write_png(path, frame)
             print(f"saved {path}")
-        else:
-            print(f"could not write {path}")
+        except (OSError, cv2.error) as exc:
+            print(f"could not write {path}: {exc}")
 
     def _save_evidence(self, img):
         """Keep the picture the operator was shown, once per new result.
@@ -1352,7 +1454,15 @@ class Console:
         self.task.overlay(self, view)
 
         self.draw_osd(view, telem, telem is not None, en)
+        if isinstance(self.task, TaskColor):
+            view = self.task.controls_view(self, view)
         return view
+
+    def _mouse_event(self, event, x, y, flags, param):
+        if isinstance(self.task, TaskColor):
+            self.task.control_mouse(self, event, x, y, flags, param)
+        else:
+            self.mouse.on_event(event, x, y, flags, param)
 
     # ---- main loop ----------------------------------------------------
     def run(self) -> int:
@@ -1369,7 +1479,7 @@ class Console:
         cv2.resizeWindow(WINDOW, 1280, 720)
         # Callbacks only fire while waitKey is running, which it is once per
         # loop, so the pointer stays current enough for a deliberate press.
-        cv2.setMouseCallback(WINDOW, self.mouse.on_event)
+        cv2.setMouseCallback(WINDOW, self._mouse_event)
 
         try:
             while True:
@@ -1398,10 +1508,17 @@ class Console:
                         self.board.send(nx, ny, vz, en)
                         sent += 1
                     except Exception as exc:
+                        self.latch.force_lock()
                         print(f"serial write failed: {exc}")
                         return 2
 
-                self.board.poll()
+                try:
+                    self.board.poll()
+                except OSError as exc:
+                    self.latch.force_lock()
+                    print(f"Serial connection lost on {self.board.port}: {exc}. "
+                          "Check the USB connection and restart the console.")
+                    return 2
                 telem = self.board.telem
                 if telem is None and not warned and now - t_start > 4.0:
                     warned = True
@@ -1419,9 +1536,6 @@ class Console:
                     self._t_fps = now
 
                 cv2.imshow(WINDOW, img)
-                if self.color.show_masks and self.last_frame is not None:
-                    cv2.imshow(MASKS_WINDOW, np.hstack(list(
-                        masks(self.last_frame, self.color.ranges).values())))
 
                 if not self._key(cv2.waitKey(1) & 0xFF):
                     break
