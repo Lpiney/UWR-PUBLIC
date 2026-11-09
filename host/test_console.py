@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from console import (AMBER, BTN_APRILTAG, BTN_CAPTURE, COMMAND_MAX, GREEN, RED,
-                     Console, Pad, Task, TaskAprilTag, TaskColor, TaskWifi,
+                     Console, Pad, Task, TaskAprilTag, TaskColor, TaskWifi, CAMERA_BAR_HEIGHT,
                      _text_wh, fit_text, motor_rows, throttle_frac, upright,
                      vertical_label)
 from pad_bridge import DEFAULT_DEADMAN_BUTTON, Telemetry
@@ -167,7 +167,7 @@ class ConsoleTaskTests(TestCase):
     def click_colour_button(self, action):
         self.con.render(self.telemetry, True, frame=colour_scene("B"))
         _, (x, y, w, h) = next(b for b in self.con.task.ui_buttons if b[0] == action)
-        self.con._mouse_event(cv2.EVENT_LBUTTONDOWN, x+w//2, y+h//2, 0, None)
+        self.con._mouse_event(cv2.EVENT_LBUTTONDOWN, x+w//2, y+h//2+CAMERA_BAR_HEIGHT, 0, None)
 
     def test_selected_colour_is_sampled_once_by_rb_after_aiming(self):
         self.con._switch(TaskColor)
@@ -182,7 +182,7 @@ class ConsoleTaskTests(TestCase):
             self.con.mouse.x, self.con.mouse.y = 320, 225
             self.assertFalse(task.capture(self.con))
             self.assertEqual(task.pending_color, 'B')
-            self.con._mouse_event(cv2.EVENT_LBUTTONDOWN, 320, 225, 0, None)
+            self.con._mouse_event(cv2.EVENT_LBUTTONDOWN, 320, 225+CAMERA_BAR_HEIGHT, 0, None)
             self.assertFalse(task.lab.samples['B'])
             pressed = [0] * 18
             pressed[BTN_CAPTURE] = 1
@@ -196,7 +196,7 @@ class ConsoleTaskTests(TestCase):
             self.assertEqual(len(task.lab.samples['B']), 1)
             # Selecting again replaces that colour instead of accumulating.
             self.click_colour_button('cal_B')
-            self.con._mouse_event(cv2.EVENT_MOUSEMOVE, 320, 225, 0, None)
+            self.con._mouse_event(cv2.EVENT_MOUSEMOVE, 320, 225+CAMERA_BAR_HEIGHT, 0, None)
             self.con._key(ord('c'))
             self.assertEqual(len(task.lab.samples['B']), 1)
             self.assertIsNone(task.pending_color)
@@ -204,7 +204,7 @@ class ConsoleTaskTests(TestCase):
     def test_sidebar_hover_does_not_move_the_selected_target(self):
         self.con._switch(TaskColor)
         self.point_at(320, 225)
-        self.con._mouse_event(cv2.EVENT_MOUSEMOVE, 700, 230, 0, None)
+        self.con._mouse_event(cv2.EVENT_MOUSEMOVE, 700, 230+CAMERA_BAR_HEIGHT, 0, None)
         self.assertEqual(self.con.mouse.position(), (320, 225))
 
     def test_mouse_clear_requires_confirmation_and_can_cancel(self):
@@ -455,7 +455,7 @@ class ConsoleTaskTests(TestCase):
             out = self.con.render(self.telemetry, True, frame=self.tag_frame.copy())
             expected = (max(720, self.tag_frame.shape[0]),
                         self.tag_frame.shape[1] + self.con.task.PANEL_WIDTH, 3) if task_cls is TaskColor else self.tag_frame.shape
-            self.assertEqual(out.shape, expected)
+            self.assertEqual(out.shape, (expected[0]+CAMERA_BAR_HEIGHT, *expected[1:]))
             self.assertGreater(int(out.sum()), 0)
 
     def test_every_task_declares_the_keys_it_handles(self):
@@ -703,7 +703,7 @@ class WifiPanelTests(TestCase):
         frame = frame_with_tags(7)
         self.con._key(ord("t"))
         out = self.con.render(telemetry(), True, frame=frame.copy())
-        self.assertEqual(out.shape, frame.shape)
+        self.assertEqual(out.shape, (frame.shape[0]+CAMERA_BAR_HEIGHT, *frame.shape[1:]))
 
 
 class EvidenceTests(TestCase):
@@ -832,7 +832,7 @@ class ThrottlePanelTests(TestCase):
     def test_the_panel_draws_for_a_live_telemetry_frame(self):
         con = make_console()
         out = con.render(telemetry(), True, frame=frame_with_tags(7).copy())
-        self.assertEqual(out.shape, frame_with_tags(7).shape)
+        self.assertEqual(out.shape, (frame_with_tags(7).shape[0]+CAMERA_BAR_HEIGHT, *frame_with_tags(7).shape[1:]))
 
     def test_the_panel_draws_before_the_board_answers(self):
         """telem is None until the first JOY line arrives."""

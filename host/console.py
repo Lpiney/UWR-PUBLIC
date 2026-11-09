@@ -83,6 +83,7 @@ CAM_WIDTH = 1280
 CAM_HEIGHT = 720
 CAM_FPS = 30
 UI_FPS = 30
+CAMERA_BAR_HEIGHT = 42
 # How far to look for a camera. Six is more than a laptop and a USB hub are
 # likely to present, and probing an index that is empty can be slow.
 CAMERA_SCAN_LIMIT = 6
@@ -286,6 +287,10 @@ class Camera:
         self._next_try = 0.0
         self._stop = threading.Event()
         self._thread = None
+        self._profile_lock = threading.Lock()
+        self._pending_profile = None
+        self.switching = False
+        self.status = "Opening camera"
 
         # At startup, look for a camera rather than giving up on the first
         # index: an index that is wrong is a guess, not a statement.
@@ -354,8 +359,49 @@ class Camera:
         self._cap = None
         return False
 
+    def request_resolution(self, width, height):
+        """Queue work only; the UI never opens/closes a device or waits for it."""
+        if (width, height) not in ((1280, 720), (640, 480)):
+            raise ValueError("unsupported camera resolution")
+        with self._profile_lock:
+            if not self.switching and (width, height) == (self.width, self.height):
+                return False
+            self._pending_profile = (width, height)
+            self.switching = True
+            self.status = f"Switching to {height}p... controls stay connected"
+        return True
+
+    def _apply_resolution_request(self):
+        """Only the capture worker owns VideoCapture during live switching."""
+        with self._profile_lock:
+            profile, self._pending_profile = self._pending_profile, None
+        if profile is None:
+            return
+        previous = self.width, self.height
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+        self._frame = None
+        self.last_frame_at = 0.0
+        self._capture_fps = 0.0
+        self._capture_count = 0
+        self._capture_since = time.monotonic()
+        self._misses = 0
+        self.width, self.height = profile
+        self.lost = True
+        try:
+            opened = self._open()  # Same camera index; never rescan other devices.
+        except (cv2.error, OSError) as exc:
+            print(f"camera profile open failed: {exc}")
+            opened = False
+        if not opened:
+            self.width, self.height = previous
+            self.status = f"Switch failed; restoring {self.height}p..."
+            self._next_try = 0.0  # Existing reconnect loop reopens the previous profile.
+
     def _run(self):
         while not self._stop.is_set():
+            self._apply_resolution_request()
             if self._cap is None:
                 if time.monotonic() < self._next_try:
                     time.sleep(0.1)
@@ -376,6 +422,11 @@ class Camera:
                 # the worker never writes into a frame it has handed over.
                 # upright() returns a new array too, so that still holds.
                 self._frame = upright(frame)
+                with self._profile_lock:
+                    if self._pending_profile is None and (self.switching or not self.last_frame_at):
+                        self.switching = False
+                        self.status = (f"Actual {frame.shape[1]}x{frame.shape[0]} "
+                                       f"/ requested {self.height}p {self.requested_fps}fps")
                 self.last_frame_at = time.monotonic()
                 self._capture_count += 1
                 elapsed = self.last_frame_at - self._capture_since
@@ -402,7 +453,7 @@ class Camera:
 
     def read(self):
         """The newest frame, or None. Never blocks on the device."""
-        return self._frame
+        return None if self.switching else self._frame
 
     @property
     def ok(self) -> bool:
@@ -1129,6 +1180,7 @@ class Console:
         self._t_fps = time.monotonic()
         self.now = time.monotonic()
         self.last_frame = None
+        self.camera_buttons = []
         self.mission = {"wifi": "-", "rssi": "-", "ip": "-", "http": "-",
                         "data": "", "ssid": "-", "url": "-",
                         "nets": [], "scan_new": [], "scanning": False,
@@ -1490,14 +1542,17 @@ class Console:
         if frame is None:
             frame = self.camera.read()
         if frame is None:
-            frame = np.zeros((CAM_HEIGHT, CAM_WIDTH, 3), np.uint8)
+            frame = np.zeros((getattr(self.camera, "height", CAM_HEIGHT),
+                              getattr(self.camera, "width", CAM_WIDTH), 3), np.uint8)
         self.now = time.monotonic()
-        self.last_frame = frame
+        switching = getattr(self.camera, "switching", False)
+        self.last_frame = None if switching else frame
 
         # The task runs on the live frame, then draws on whatever it wants
         # shown. Copying before the overlay keeps a task from painting onto
         # the buffer the camera will hand back next tick.
-        self.task.update(self, frame)
+        if not switching:
+            self.task.update(self, frame)
         view = self.task.view(self, frame)
         if view is frame:
             view = frame.copy()
@@ -1506,9 +1561,40 @@ class Console:
         self.draw_osd(view, telem, telem is not None, en)
         if isinstance(self.task, TaskColor):
             view = self.task.controls_view(self, view)
-        return view
+        return self._camera_bar(view)
+
+    def _camera_bar(self, view):
+        bar = np.full((CAMERA_BAR_HEIGHT, view.shape[1], 3), (32, 35, 40), np.uint8)
+        self.camera_buttons = []
+        for label, x, width, height in [("720P", 10, 1280, 720), ("480P", 92, 640, 480)]:
+            active = (getattr(self.camera, "width", None), getattr(self.camera, "height", None)) == (width, height)
+            cv2.rectangle(bar, (x, 5), (x+72, 35), (60, 105, 95) if active else (65, 68, 74), -1)
+            cv2.putText(bar, label, (x+12, 26), FONT, 0.52, WHITE, 1, cv2.LINE_AA)
+            self.camera_buttons.append(((x, 5, 72, 30), (width, height)))
+        status = getattr(self.camera, "status", "Camera resolution")
+        text = fit_text(status, np.zeros((1, max(1, view.shape[1]-180), 3), np.uint8), 0.43)
+        cv2.putText(bar, text, (180, 26), FONT, 0.43, AMBER, 1, cv2.LINE_AA)
+        return np.vstack((bar, view))
 
     def _mouse_event(self, event, x, y, flags, param):
+        if y < CAMERA_BAR_HEIGHT:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                for (bx, by, bw, bh), profile in self.camera_buttons:
+                    if bx <= x <= bx+bw and by <= y <= by+bh:
+                        request = getattr(self.camera, "request_resolution", None)
+                        if request is not None and request(*profile):
+                            self.mouse = Mouse()  # Pixel coordinates change with resolution.
+                            self.last_frame = None
+                            if isinstance(self.task, TaskColor):
+                                self.task.pending_color = None
+                                self.task.pending_aimed = False
+                                self.task.answer = None
+                                self.task.notify("Camera switching. Aim again after the picture returns.")
+                        return
+            return
+        if getattr(self.camera, "switching", False):
+            return
+        y -= CAMERA_BAR_HEIGHT
         if isinstance(self.task, TaskColor):
             self.task.control_mouse(self, event, x, y, flags, param)
         else:
