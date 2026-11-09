@@ -66,9 +66,9 @@
 #define DRIVE_SLEW_US_PER_MS 0.5f
 // Keep the original stop rate for a lost link or locked safety key.
 #define SLEW_US_PER_MS 2.0f
-// Hold neutral before changing sign. One extra 50 Hz frame allows for the
-// phase of the first neutral pulse; this is not a rotor-stop measurement.
-#define REVERSE_NEUTRAL_MS 520
+// Requested short neutral hold before changing sign. This is a signal
+// dwell time, not a measured rotor-stop time; drive slew still applies.
+#define REVERSE_NEUTRAL_MS 50
 
 // ---------------------------------------------------------------------------
 //  Input shaping

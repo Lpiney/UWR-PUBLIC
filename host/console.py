@@ -81,6 +81,7 @@ MASKS_WINDOW = "Colour masks"
 CAM_INDEX = 0
 CAM_WIDTH = 1280
 CAM_HEIGHT = 720
+CAM_FPS = 30
 # How far to look for a camera. Six is more than a laptop and a USB hub are
 # likely to present, and probing an index that is empty can be slow.
 CAMERA_SCAN_LIMIT = 6
@@ -264,10 +265,15 @@ class Camera:
     LOST_AFTER = 15
     RESCAN_SECONDS = 1.0        # how often to retry while it is gone
 
-    def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT):
+    def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT, fps=CAM_FPS):
         self.index = index
         self.width = width
         self.height = height
+        self.requested_fps = fps
+        self._capture_fps = 0.0
+        self._capture_count = 0
+        self._capture_since = time.monotonic()
+        self.last_frame_at = 0.0
         self.lost = False
 
         self._cap = None
@@ -307,8 +313,18 @@ class Camera:
                 if not cap.isOpened():
                     cap.release()
                     continue
+                if sys.platform.startswith("win"):
+                    # Request USB MJPEG to reduce transfer bandwidth where supported.
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                cap.set(cv2.CAP_PROP_FPS, self.requested_fps)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                print(f"camera {index}: requested {self.width}x{self.height} "
+                      f"@ {self.requested_fps} fps; driver reports "
+                      f"{cap.get(cv2.CAP_PROP_FRAME_WIDTH):g}x"
+                      f"{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):g} "
+                      f"@ {cap.get(cv2.CAP_PROP_FPS):g} fps")
                 cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
                 if CAM_EXPOSURE:
                     cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
@@ -333,12 +349,23 @@ class Camera:
                     print(f"camera {self.index} reconnected")
                 continue
 
-            ok, frame = self._cap.read()
+            try:
+                ok, frame = self._cap.read()
+            except (cv2.error, OSError) as exc:
+                print(f"camera read failed: {exc}")
+                ok, frame = False, None
             if ok and frame is not None:
                 # A fresh array each read, so publishing it needs no lock:
                 # the worker never writes into a frame it has handed over.
                 # upright() returns a new array too, so that still holds.
                 self._frame = upright(frame)
+                self.last_frame_at = time.monotonic()
+                self._capture_count += 1
+                elapsed = self.last_frame_at - self._capture_since
+                if elapsed >= 1.0:
+                    self._capture_fps = self._capture_count / elapsed
+                    self._capture_count = 0
+                    self._capture_since = self.last_frame_at
                 self._misses = 0
                 self.lost = False
             else:
@@ -349,6 +376,12 @@ class Camera:
                     self.lost = True
                     self._next_try = 0.0     # try again at once
                     print("camera lost - unplugged, or taken by another program")
+
+    @property
+    def capture_fps(self):
+        if not self.last_frame_at or time.monotonic() - self.last_frame_at > 1.0:
+            return 0.0
+        return self._capture_fps
 
     def read(self):
         """The newest frame, or None. Never blocks on the device."""
@@ -1265,7 +1298,7 @@ class Console:
             _, py, _, ph = draw_panel(img, 16, py + ph + 4, [("NO CAMERA", RED)],
                                       anchor="tl", fs=0.5)
         _, py, _, ph = draw_panel(img, 16, py + ph + 4,
-                                  [(f"{self.fps:4.1f} fps", GREY)],
+                                  [(f"CAM {getattr(self.camera, 'capture_fps', 0.0):4.1f} fps  UI {self.fps:4.1f}", GREY)],
                                   anchor="tl", fs=0.42, pad=6)
 
         # Whatever is being typed, or the board's answer to the last command.

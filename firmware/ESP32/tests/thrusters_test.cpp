@@ -82,9 +82,9 @@ static void reverseTest() {
     for (int i = 0; i < 124; ++i) tick(to, from, to);
     assert(st().outL == to && st().outR == from && st().outV == to);
     // Slew starts on the tick that releases the hold, so allow one tick
-    // when comparing with the continuous-time 2.52 s operator estimate.
-    assert((uint32_t)(fakeNow - start) >= 2520 - CONTROL_MS);
-    assert((uint32_t)(fakeNow - start) <= 2520 + CONTROL_MS);
+    // when comparing with the continuous-time ramp plus configured hold estimate.
+    assert((uint32_t)(fakeNow - start) >= 2000 + REVERSE_NEUTRAL_MS - CONTROL_MS);
+    assert((uint32_t)(fakeNow - start) <= 2000 + REVERSE_NEUTRAL_MS + CONTROL_MS);
   }
 }
 static void centreTest(bool longWait) {
@@ -154,7 +154,7 @@ static void wrapTest() {
   tick(2000);
   assert(st().ready && st().outL == 1504);
   drive();
-  fakeNow = UINT32_MAX - 1200;
+  fakeNow = UINT32_MAX - (1000 + REVERSE_NEUTRAL_MS / 2);
   reachNeutral(1000);
   const uint32_t at = fakeNow;
   while ((uint32_t)(fakeNow + CONTROL_MS - at) < REVERSE_NEUTRAL_MS) {

@@ -37,6 +37,7 @@ namespace params {
 struct Data {
   int neutral = ESC_US_NEUTRAL;
   int trimL = 0, trimR = 0, trimV = 0;
+  int maxPct = 100, maxPctV = 100;
 };
 inline Data& d() { static Data value; return value; }
 }
