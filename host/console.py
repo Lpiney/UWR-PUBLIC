@@ -82,11 +82,12 @@ CAM_INDEX = 0
 CAM_WIDTH = 1280
 CAM_HEIGHT = 720
 CAM_FPS = 30
+UI_FPS = 30
 # How far to look for a camera. Six is more than a laptop and a USB hub are
 # likely to present, and probing an index that is empty can be slow.
 CAMERA_SCAN_LIMIT = 6
 
-CAM_GAIN = 100.0        # OpenCV camera brightness, 0-200 (100 = untouched)
+CAM_GAIN = None         # Leave device gain unchanged; there is no universal neutral value.
 CAM_EXPOSURE = 0.0      # 0 = auto. Set negative for manual on some webcams.
 
 # SDL's standard mapping puts A/B/X/Y at 0/1/2/3. Confirm on the real
@@ -265,11 +266,14 @@ class Camera:
     LOST_AFTER = 15
     RESCAN_SECONDS = 1.0        # how often to retry while it is gone
 
-    def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT, fps=CAM_FPS):
+    def __init__(self, index=CAM_INDEX, width=CAM_WIDTH, height=CAM_HEIGHT, fps=CAM_FPS,
+                 backend="default", exposure=None):
         self.index = index
         self.width = width
         self.height = height
         self.requested_fps = fps
+        self.backend = backend
+        self.exposure = exposure
         self._capture_fps = 0.0
         self._capture_count = 0
         self._capture_since = time.monotonic()
@@ -307,8 +311,10 @@ class Camera:
         if scan:
             order += [i for i in range(CAMERA_SCAN_LIMIT) if i != self.index]
 
+        choices = {"default": camera_backends(), "dshow": (cv2.CAP_DSHOW,),
+                   "msmf": (cv2.CAP_MSMF,), "auto": (cv2.CAP_ANY,)}
         for index in order:
-            for backend in camera_backends():
+            for backend in choices[self.backend]:
                 cap = cv2.VideoCapture(index, backend)
                 if not cap.isOpened():
                     cap.release()
@@ -320,15 +326,26 @@ class Camera:
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
                 cap.set(cv2.CAP_PROP_FPS, self.requested_fps)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if sys.platform.startswith("win"):
+                    # Reapply after size/FPS negotiation, which may reset the format.
+                    accepted_mjpg = cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                    if not accepted_mjpg:
+                        print("camera: MJPEG request rejected; keeping the driver's format")
+                if CAM_GAIN is not None:
+                    cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
+                exposure = self.exposure if self.exposure is not None else CAM_EXPOSURE or None
+                if exposure is not None:
+                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+                    if not cap.set(cv2.CAP_PROP_EXPOSURE, exposure):
+                        print("camera: manual exposure request rejected")
+                fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+                codec = ''.join(chr((fourcc >> (8*i)) & 255) for i in range(4))
+                codec = ''.join(c if c.isprintable() else '?' for c in codec)
                 print(f"camera {index}: requested {self.width}x{self.height} "
                       f"@ {self.requested_fps} fps; driver reports "
                       f"{cap.get(cv2.CAP_PROP_FRAME_WIDTH):g}x"
                       f"{cap.get(cv2.CAP_PROP_FRAME_HEIGHT):g} "
-                      f"@ {cap.get(cv2.CAP_PROP_FPS):g} fps")
-                cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
-                if CAM_EXPOSURE:
-                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
-                    cap.set(cv2.CAP_PROP_EXPOSURE, CAM_EXPOSURE)
+                      f"@ {cap.get(cv2.CAP_PROP_FPS):g} fps, format={codec}, backend={backend}")
                 self._cap = cap
                 if index != self.index:
                     print(f"camera {self.index} was not there; using {index}")
@@ -1507,6 +1524,7 @@ class Console:
         period = 1.0 / 50.0
         warned = False
         t_start = time.monotonic()
+        last_draw = float("-inf")
 
         cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WINDOW, 1280, 720)
@@ -1559,17 +1577,18 @@ class Console:
                           "powered, flashed with the ROV firmware, and that "
                           f"{self.board.port} is the right port.")
 
-                img = self.render(telem, en)
-                self._save_evidence(img)
+                if now - last_draw >= 1.0 / UI_FPS:
+                    last_draw = now
+                    img = self.render(telem, en)
+                    self._save_evidence(img)
 
-                self.frames += 1
-                if now - self._t_fps >= 0.5:
-                    self.fps = self.frames / (now - self._t_fps)
-                    self.frames = 0
-                    self._t_fps = now
+                    self.frames += 1
+                    if now - self._t_fps >= 0.5:
+                        self.fps = self.frames / (now - self._t_fps)
+                        self.frames = 0
+                        self._t_fps = now
 
-                cv2.imshow(WINDOW, img)
-
+                    cv2.imshow(WINDOW, img)
                 if not self._key(cv2.waitKey(1) & 0xFF):
                     break
         except KeyboardInterrupt:
@@ -1596,6 +1615,12 @@ def main() -> int:
     p.add_argument("--camera", type=int, default=CAM_INDEX,
                    help="camera index to prefer (others are tried if it is not "
                         "there; --list-cameras says which are)")
+    p.add_argument("--camera-size", choices=("1280x720", "640x480"), default="1280x720",
+                   help="capture resolution; 640x480 reduces USB/CPU load")
+    p.add_argument("--camera-fps", type=int, choices=(15, 30, 60), default=CAM_FPS)
+    p.add_argument("--camera-backend", choices=("default", "dshow", "msmf", "auto"), default="default")
+    p.add_argument("--camera-exposure", type=float, default=None,
+                   help="optional manual exposure in device/backend units; may darken the picture")
     p.add_argument("--list-cameras", action="store_true",
                    help="probe camera indices and exit")
     p.add_argument("--axis-x", type=int, default=0, help="stick X axis number")
@@ -1604,6 +1629,8 @@ def main() -> int:
     p.add_argument("--invert-y", action="store_true", help="negate Y")
     args = p.parse_args()
 
+    if args.camera_backend in ("dshow", "msmf") and not sys.platform.startswith("win"):
+        p.error("dshow and msmf are Windows-only camera backends")
     if args.list_cameras:
         return list_cameras()
 
@@ -1650,7 +1677,9 @@ def main() -> int:
         return 2
     print(f"serial: {port} @ 115200")
 
-    camera = Camera(args.camera)
+    width, height = map(int, args.camera_size.split("x"))
+    camera = Camera(args.camera, width, height, args.camera_fps,
+                    backend=args.camera_backend, exposure=args.camera_exposure)
     if not camera.ok:
         print(f"No camera delivered frames (tried from index {args.camera}). "
               "Run --list-cameras to see what is attached.")

@@ -33,11 +33,13 @@ jobs:
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'UWR test folder'
           New-Item -ItemType Directory -Force $target | Out-Null
-          Copy-Item host, setup-windows.cmd, run-console.cmd, show-input.cmd -Destination $target -Recurse
+          Copy-Item host, setup-windows.cmd, run-console.cmd, run-console-fast.cmd, show-input.cmd -Destination $target -Recurse
           Push-Location $target
           try {
             cmd /c 'setup-windows.cmd --no-pause'
             if ($LASTEXITCODE -ne 0) { throw 'Windows setup failed' }
             cmd /c 'run-console.cmd --help'
             if ($LASTEXITCODE -ne 0) { throw 'Windows launcher failed' }
+            cmd /c 'run-console-fast.cmd --help'
+            if ($LASTEXITCODE -ne 0) { throw 'Windows fast launcher failed' }
           } finally { Pop-Location }
