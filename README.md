@@ -5,7 +5,9 @@ CityUHK UR Fall Training 2026 水下 ROV 的控制與視覺程式。
 **比賽成績：** Team 4 在香港城市大學 Underwater Robotics 2026/27 Fall Training 獲得**季軍（Second Runner Up）**。
 [查看獲獎證書（PDF）](docs/awards/ur-fall-training-2026-team4.pdf)
 
-**下載：** [v4.0 正式版輕量包](https://github.com/Lpiney/UWR-PUBLIC/releases/download/v4.0/UWR-v4.0-Lite.zip)，包含控制台、啟動腳本、ESP32 韌體原始碼和操作指南。
+**下載：** [v5.0 輕量版](https://github.com/Lpiney/UWR-PUBLIC/releases/download/v5.0/UWR-v5.0-Lite.zip)，包含控制台、啟動腳本、ESP32 韌體原始碼和操作指南。
+
+**參賽版本：** [v4.0 正式版](https://github.com/Lpiney/UWR-PUBLIC/releases/tag/v4.0) 記錄 Team 4 實際上場時使用的程式版本。
 
 > **第一次上手請先看 [操作指南](docs/GUIDE.md)** —— 從裝軟體到讓馬達轉起來的完整
 > 步驟，照順序做就好。這份 README 是參考資料，指南是操作流程。
